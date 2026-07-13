@@ -1,0 +1,12 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Entornos y caches locales regenerables"
+paths = [
+  '''(^|[\\/])\.venv([\\/]|$)''',
+  '''(^|[\\/])\.git([\\/]|$)''',
+  '''(^|[\\/])\.pytest_cache([\\/]|$)''',
+  '''(^|[\\/])\.mypy_cache([\\/]|$)''',
+  '''(^|[\\/])\.ruff_cache([\\/]|$)''',
+]
