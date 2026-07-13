@@ -16,6 +16,7 @@ from hermes_orchestrator.database import (
     create_session_factory,
     database_is_ready,
 )
+from hermes_orchestrator.environment_api import build_environment_router
 from hermes_orchestrator.fleet_api import build_fleet_router
 from hermes_orchestrator.fleet_runner import FleetRunner, HttpFleetRunnerClient
 from hermes_orchestrator.mcp_server import build_mcp_server
@@ -48,6 +49,7 @@ def create_app(
     app.include_router(build_catalog_router(resolved_settings))
     app.include_router(build_task_router(resolved_settings))
     app.include_router(build_usage_router(resolved_settings))
+    app.include_router(build_environment_router(resolved_settings))
     app.include_router(
         build_fleet_router(
             resolved_settings,
@@ -108,6 +110,10 @@ def create_app(
                 "budget_dispatch_controls",
                 "quota_status",
                 "circuit_breaker",
+                "governed_environments",
+                "immutable_promotion",
+                "local_ttl_port_allocation",
+                "environment_rollback",
             ],
         )
 

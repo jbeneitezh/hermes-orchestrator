@@ -25,6 +25,10 @@ class Permission(StrEnum):
     FLEET_RECONCILE_REQUEST = "fleet:reconcile_request"
     USAGE_READ = "usage:read"
     USAGE_CONTROL_RESET = "usage:control_reset"
+    ENVIRONMENTS_READ = "environments:read"
+    ENVIRONMENTS_DEPLOY = "environments:deploy"
+    ENVIRONMENTS_PROMOTE = "environments:promote"
+    ENVIRONMENTS_ROLLBACK = "environments:rollback"
 
 
 ROLE_PERMISSIONS: dict[str, frozenset[Permission]] = {
@@ -44,6 +48,10 @@ ROLE_PERMISSIONS: dict[str, frozenset[Permission]] = {
             Permission.FLEET_READ,
             Permission.FLEET_RECONCILE_REQUEST,
             Permission.USAGE_READ,
+            Permission.ENVIRONMENTS_READ,
+            Permission.ENVIRONMENTS_DEPLOY,
+            Permission.ENVIRONMENTS_PROMOTE,
+            Permission.ENVIRONMENTS_ROLLBACK,
         }
     ),
     "operator": frozenset(
@@ -57,6 +65,11 @@ ROLE_PERMISSIONS: dict[str, frozenset[Permission]] = {
             Permission.FLEET_RECONCILE_REQUEST,
             Permission.USAGE_READ,
             Permission.USAGE_CONTROL_RESET,
+            Permission.APPROVALS_DECIDE,
+            Permission.ENVIRONMENTS_READ,
+            Permission.ENVIRONMENTS_DEPLOY,
+            Permission.ENVIRONMENTS_PROMOTE,
+            Permission.ENVIRONMENTS_ROLLBACK,
         }
     ),
     "researcher": frozenset(
@@ -68,6 +81,7 @@ ROLE_PERMISSIONS: dict[str, frozenset[Permission]] = {
             Permission.TASKS_COMMENT,
             Permission.RUNS_READ,
             Permission.USAGE_READ,
+            Permission.ENVIRONMENTS_READ,
         }
     ),
     "developer": frozenset(
@@ -79,6 +93,8 @@ ROLE_PERMISSIONS: dict[str, frozenset[Permission]] = {
             Permission.TASKS_COMMENT,
             Permission.RUNS_READ,
             Permission.USAGE_READ,
+            Permission.ENVIRONMENTS_READ,
+            Permission.ENVIRONMENTS_DEPLOY,
         }
     ),
     "validator": frozenset(
@@ -91,6 +107,7 @@ ROLE_PERMISSIONS: dict[str, frozenset[Permission]] = {
             Permission.APPROVALS_DECIDE,
             Permission.FLEET_READ,
             Permission.USAGE_READ,
+            Permission.ENVIRONMENTS_READ,
         }
     ),
 }

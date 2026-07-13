@@ -34,6 +34,10 @@ La API queda disponible en `http://localhost:8080`:
 - `GET /v1/usage/runs/{run_id}`: asiento contable durable de un run.
 - `GET /v1/usage/control-status`: presupuestos, cuota, circuitos y auditoría de controles.
 - `POST /v1/usage/circuits/{id}/reset`: reset auditado, reservado al operador/owner.
+- `GET /v1/environments`: definiciones y despliegues históricos de local/dev/pre/prod-sim.
+- `POST /v1/environments/deployments`: crea local o dev desde una rama y resuelve su SHA.
+- `POST /v1/environments/promotions`: promueve dev a pre por SHA y pre a prod-sim por tag, con aprobación independiente.
+- `POST /v1/environments/{environment}/rollback`: recupera un candidato inmutable anterior sin reescribir historial.
 - `GET /docs`: OpenAPI interactivo generado por FastAPI.
 
 ## Calidad
@@ -61,6 +65,8 @@ Las rutas gobernadas exigen `X-Actor-Id`. El rol se resuelve desde `HERMES_ORCHE
 El API no monta Docker. `fleet-reconciler` es un proceso privado separado que valida el Compose renderizado y solo ejecuta `config`, `pull` y `up --no-deps` sobre workers allowlisted. El socket no se entrega al líder ni al operador.
 
 Cada run terminal genera como máximo un asiento en `usage_ledger`. Antes de cada dispatch se evalúan concurrencia, fan-out, retry, cuota, presupuesto soft/hard y circuito worker/perfil. Los límites por defecto provienen de `HERMES_ORCHESTRATOR_USAGE_*`; la tabla `budgets` permite estrecharlos por proyecto, agente, perfil o categoría y el presupuesto de la Task puede estrecharlos aún más.
+
+Los entornos se registran en PostgreSQL y no mutan reglas remotas de GitHub. `local` deriva su identidad de una Task, recibe puerto de un pool gobernado y expira por TTL; `dev` conserva rama y SHA resuelto; `pre` queda congelado por SHA; `prod-sim` conserva tag y SHA. `live` se deniega en v1. Repositorios y pool local se configuran con `HERMES_ORCHESTRATOR_ENVIRONMENT_*`.
 
 ## Arquitectura
 

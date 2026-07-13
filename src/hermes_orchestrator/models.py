@@ -387,3 +387,57 @@ class CircuitBreaker(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, onupdate=utc_now
     )
+
+
+class EnvironmentDeployment(Base):
+    __tablename__ = "environment_deployments"
+    __table_args__ = (
+        Index("ix_environment_deployments_current", "environment", "instance_key", "status"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    environment: Mapped[str] = mapped_column(String(30), index=True)
+    instance_key: Mapped[str] = mapped_column(String(160), index=True)
+    repository: Mapped[str] = mapped_column(String(240), index=True)
+    ref_kind: Mapped[str] = mapped_column(String(20))
+    ref_value: Mapped[str] = mapped_column(String(300))
+    resolved_sha: Mapped[str] = mapped_column(String(40), index=True)
+    task_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("tasks.id"), index=True)
+    allocated_port: Mapped[int | None] = mapped_column(Integer, index=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    status: Mapped[str] = mapped_column(String(30), default="active", index=True)
+    source_deployment_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("environment_deployments.id"), index=True
+    )
+    rollback_of_deployment_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("environment_deployments.id"), index=True
+    )
+    requested_by_actor_id: Mapped[str] = mapped_column(String(160), index=True)
+    approval_actor_id: Mapped[str | None] = mapped_column(String(160))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+
+
+class EnvironmentAction(Base):
+    __tablename__ = "environment_actions"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    action: Mapped[str] = mapped_column(String(30), index=True)
+    environment: Mapped[str] = mapped_column(String(30), index=True)
+    requested_by_actor_id: Mapped[str] = mapped_column(String(160), index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(160), unique=True, index=True)
+    request_hash: Mapped[str] = mapped_column(String(64))
+    request_payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(30), index=True)
+    deployment_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("environment_deployments.id"), index=True
+    )
+    previous_deployment_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("environment_deployments.id"), index=True
+    )
+    approval_actor_id: Mapped[str | None] = mapped_column(String(160))
+    approval_reason: Mapped[str | None] = mapped_column(Text)
+    error_code: Mapped[str | None] = mapped_column(String(100), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)

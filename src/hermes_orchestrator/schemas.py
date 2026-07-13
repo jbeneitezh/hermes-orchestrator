@@ -416,3 +416,72 @@ class CircuitResetResponse(BaseModel):
     consecutive_failures: int
     reset_by_actor_id: str | None
     reset_reason: str | None
+
+
+EnvironmentName = Literal["local", "dev", "pre", "prod-sim"]
+
+
+class EnvironmentApprovalEvidence(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    actor_id: str = Field(min_length=1, max_length=160)
+    decision: Literal["approved"] = "approved"
+    reason: str = Field(min_length=1, max_length=2000)
+
+
+class EnvironmentDeployCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    environment: Literal["local", "dev"]
+    repository: str = Field(min_length=1, max_length=240)
+    branch: str = Field(min_length=1, max_length=300)
+    resolved_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
+    task_id: uuid.UUID | None = None
+    ttl_seconds: int | None = Field(default=None, gt=0)
+
+
+class EnvironmentPromotionCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_deployment_id: uuid.UUID
+    target_environment: Literal["pre", "prod-sim", "live"]
+    repository: str = Field(min_length=1, max_length=240)
+    resolved_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
+    tag: str | None = Field(default=None, min_length=1, max_length=300)
+    approval: EnvironmentApprovalEvidence | None = None
+
+
+class EnvironmentRollbackCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    target_deployment_id: uuid.UUID
+    approval: EnvironmentApprovalEvidence
+
+
+class EnvironmentDeploymentResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", from_attributes=True)
+
+    id: uuid.UUID
+    environment: EnvironmentName
+    instance_key: str
+    repository: str
+    ref_kind: Literal["branch", "sha", "tag"]
+    ref_value: str
+    resolved_sha: str
+    task_id: uuid.UUID | None
+    allocated_port: int | None
+    expires_at: datetime | None
+    status: str
+    source_deployment_id: uuid.UUID | None
+    rollback_of_deployment_id: uuid.UUID | None
+    requested_by_actor_id: str
+    approval_actor_id: str | None
+    replayed: bool = False
+    created_at: datetime
+
+
+class EnvironmentInventoryResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    definitions: list[dict[str, Any]]
+    deployments: list[EnvironmentDeploymentResponse]

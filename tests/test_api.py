@@ -67,6 +67,10 @@ def test_capabilities_publish_only_bootstrap_features(monkeypatch) -> None:
             "budget_dispatch_controls",
             "quota_status",
             "circuit_breaker",
+            "governed_environments",
+            "immutable_promotion",
+            "local_ttl_port_allocation",
+            "environment_rollback",
         ],
     }
 
@@ -97,6 +101,11 @@ def test_openapi_contains_the_bootstrap_and_catalog_routes(monkeypatch) -> None:
         "/v1/usage/runs/{run_id}",
         "/v1/usage/control-status",
         "/v1/usage/circuits/{circuit_id}/reset",
+        "/v1/environments",
+        "/v1/environments/deployments",
+        "/v1/environments/deployments/{deployment_id}/expire",
+        "/v1/environments/promotions",
+        "/v1/environments/{environment}/rollback",
     }
 
 

@@ -47,6 +47,11 @@ class Settings(BaseSettings):
     usage_max_retries: int = 1
     usage_circuit_failure_threshold: int = 3
     usage_circuit_cooldown_seconds: int = 3600
+    environment_allowed_repositories: list[str] = ["jbeneitezh/tradix"]
+    environment_local_port_start: int = 22000
+    environment_local_port_end: int = 22999
+    environment_local_default_ttl_seconds: int = 14400
+    environment_local_max_ttl_seconds: int = 86400
 
 
 @lru_cache
