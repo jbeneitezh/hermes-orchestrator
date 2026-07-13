@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import Select, func, select
+from sqlalchemy import Select, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from hermes_orchestrator.config import Settings
@@ -113,6 +113,131 @@ def get_run(session: Session, run_id: uuid.UUID) -> Run:
     run = session.scalar(select(Run).where(Run.id == run_id).options(selectinload(Run.approvals)))
     if run is None:
         raise LifecycleError("not_found", "Run no encontrado", 404)
+    return run
+
+
+def _locked_run(session: Session, run_id: uuid.UUID) -> Run:
+    run = session.scalar(select(Run).where(Run.id == run_id).with_for_update())
+    if run is None:
+        raise LifecycleError("not_found", "Run no encontrado", 404)
+    return run
+
+
+def _validate_lease_duration(lease_duration: timedelta) -> None:
+    if lease_duration <= timedelta(0):
+        raise LifecycleError("invalid_lease_duration", "La duración del lease debe ser positiva")
+
+
+def _require_active_lease(run: Run, *, lease_owner: str, now: datetime) -> None:
+    if run.lease_owner != lease_owner:
+        raise LifecycleError("dispatch_lease_owner_mismatch", "El Run pertenece a otro dispatcher")
+    if run.lease_expires_at is None or ensure_aware(run.lease_expires_at) <= now:
+        raise LifecycleError("dispatch_lease_expired", "El lease del Run ha caducado")
+    if run.status not in {"dispatching", "running"}:
+        raise LifecycleError("dispatch_lease_inactive", "El Run ya no admite lease")
+
+
+def _clear_run_lease(run: Run) -> None:
+    run.lease_owner = None
+    run.lease_acquired_at = None
+    run.lease_expires_at = None
+    run.heartbeat_at = None
+
+
+def claim_dispatching_runs(
+    session: Session,
+    *,
+    lease_owner: str,
+    lease_duration: timedelta,
+    limit: int = 1,
+    now: datetime | None = None,
+) -> list[Run]:
+    """Reclama Runs elegibles de forma exclusiva dentro de una transacción corta."""
+
+    if not lease_owner.strip():
+        raise LifecycleError("invalid_lease_owner", "El owner del lease es obligatorio")
+    if limit < 1:
+        raise LifecycleError("invalid_claim_limit", "El límite de claim debe ser positivo")
+    _validate_lease_duration(lease_duration)
+    effective_now = ensure_aware(now or utc_now())
+    lease_expires_at = effective_now + lease_duration
+    statement = (
+        select(Run)
+        .where(
+            Run.status == "dispatching",
+            Run.next_attempt_at <= effective_now,
+            or_(Run.lease_expires_at.is_(None), Run.lease_expires_at <= effective_now),
+        )
+        .order_by(Run.next_attempt_at, Run.created_at, Run.id)
+        .limit(limit)
+        .with_for_update(skip_locked=True)
+    )
+    claimed = list(session.scalars(statement))
+    for run in claimed:
+        run.lease_owner = lease_owner
+        run.lease_acquired_at = effective_now
+        run.lease_expires_at = lease_expires_at
+        run.heartbeat_at = effective_now
+        run.dispatch_attempts += 1
+        append_audit(
+            session,
+            actor_id=lease_owner,
+            event_type="run.claimed",
+            aggregate_type="run",
+            aggregate_id=run.id,
+            payload={
+                "dispatch_attempt": run.dispatch_attempts,
+                "lease_expires_at": lease_expires_at.isoformat(),
+            },
+        )
+    session.commit()
+    return claimed
+
+
+def heartbeat_run_lease(
+    session: Session,
+    *,
+    run_id: uuid.UUID,
+    lease_owner: str,
+    lease_duration: timedelta,
+    now: datetime | None = None,
+) -> Run:
+    """Renueva un lease vigente sin cambiar el estado funcional del Run."""
+
+    _validate_lease_duration(lease_duration)
+    effective_now = ensure_aware(now or utc_now())
+    run = _locked_run(session, run_id)
+    _require_active_lease(run, lease_owner=lease_owner, now=effective_now)
+    run.heartbeat_at = effective_now
+    run.lease_expires_at = effective_now + lease_duration
+    session.commit()
+    return run
+
+
+def release_run_lease(
+    session: Session,
+    *,
+    run_id: uuid.UUID,
+    lease_owner: str,
+    next_attempt_at: datetime,
+    now: datetime | None = None,
+) -> Run:
+    """Libera el ownership y programa el siguiente intento del mismo Run."""
+
+    effective_now = ensure_aware(now or utc_now())
+    run = _locked_run(session, run_id)
+    _require_active_lease(run, lease_owner=lease_owner, now=effective_now)
+    _clear_run_lease(run)
+    run.next_attempt_at = ensure_aware(next_attempt_at)
+    append_audit(
+        session,
+        actor_id=lease_owner,
+        event_type="run.lease_released",
+        aggregate_type="run",
+        aggregate_id=run.id,
+        payload={"next_attempt_at": run.next_attempt_at.isoformat()},
+    )
+    session.commit()
     return run
 
 
@@ -242,6 +367,7 @@ def dispatch_task(
         dispatch_idempotency_key=idempotency_key,
         dispatch_hash=dispatch_hash,
         status="awaiting_approval" if requires_approval else "dispatching",
+        next_attempt_at=effective_now,
         timeout_at=timeout_at,
     )
     session.add(run)
@@ -299,6 +425,7 @@ def transition_run(
         run.started_at = effective_now
     if new_status in TERMINAL_RUN_STATUSES:
         run.finished_at = effective_now
+        _clear_run_lease(run)
     task = get_task(session, run.task_id)
     task.status = {
         "dispatching": "dispatched",
@@ -402,6 +529,7 @@ def cancel_task(
         run.error_code = "cancelled"
         run.summary = reason
         run.finished_at = effective_now
+        _clear_run_lease(run)
         ingest_run_usage(
             session,
             run,
@@ -457,6 +585,7 @@ def resolve_approval(
         run.status = "failed"
         run.error_code = "approval_expired"
         run.finished_at = effective_now
+        _clear_run_lease(run)
         task.status = "failed"
         ingest_run_usage(
             session,
@@ -482,11 +611,13 @@ def resolve_approval(
     approval.decided_at = effective_now
     if decision == "approved":
         run.status = "dispatching"
+        run.next_attempt_at = effective_now
         task.status = "dispatched"
     else:
         run.status = "failed"
         run.error_code = "approval_rejected"
         run.finished_at = effective_now
+        _clear_run_lease(run)
         task.status = "failed"
         ingest_run_usage(
             session,
@@ -524,6 +655,7 @@ def expire_due_runs(
         run.status = "timed_out"
         run.error_code = "timeout"
         run.finished_at = effective_now
+        _clear_run_lease(run)
         task = get_task(session, run.task_id)
         task.status = "timed_out"
         append_audit(

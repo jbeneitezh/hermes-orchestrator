@@ -215,7 +215,10 @@ class TaskComment(Base):
 
 class Run(Base):
     __tablename__ = "runs"
-    __table_args__ = (UniqueConstraint("task_id", "attempt_number", name="uq_runs_task_attempt"),)
+    __table_args__ = (
+        UniqueConstraint("task_id", "attempt_number", name="uq_runs_task_attempt"),
+        Index("ix_runs_dispatch_claim", "status", "next_attempt_at", "lease_expires_at"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     task_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tasks.id"), index=True)
@@ -227,6 +230,12 @@ class Run(Base):
     dispatch_idempotency_key: Mapped[str] = mapped_column(String(160), unique=True, index=True)
     dispatch_hash: Mapped[str] = mapped_column(String(64))
     status: Mapped[str] = mapped_column(String(40), default="dispatching", index=True)
+    dispatch_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    lease_owner: Mapped[str | None] = mapped_column(String(160))
+    lease_acquired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     timeout_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
