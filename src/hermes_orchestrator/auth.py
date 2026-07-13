@@ -49,7 +49,7 @@ def _secret_value(value: SecretStr | str) -> str:
     return value.get_secret_value() if isinstance(value, SecretStr) else value
 
 
-def _resolve_actor(token: str, settings: Settings) -> str:
+def _resolve_actor(token: str, settings: Settings) -> str | None:
     if token_sha256(token) in settings.internal_auth_revoked_token_hashes:
         raise AuthenticationError("token_revoked", "Credencial interna revocada")
     matches = [
@@ -57,9 +57,9 @@ def _resolve_actor(token: str, settings: Settings) -> str:
         for actor_id, configured in settings.internal_auth_tokens.items()
         if secrets.compare_digest(token, _secret_value(configured))
     ]
-    if len(matches) != 1:
-        raise AuthenticationError("token_unknown", "Credencial interna desconocida")
-    return matches[0]
+    if len(matches) > 1:
+        raise AuthenticationError("identity_unknown", "Credencial interna ambigua")
+    return matches[0] if matches else None
 
 
 def authenticate_bearer(
@@ -70,7 +70,43 @@ def authenticate_bearer(
     scheme, separator, token = (authorization or "").partition(" ")
     if separator != " " or scheme.lower() != "bearer" or not token.strip():
         raise AuthenticationError("token_missing", "Se requiere bearer interno")
-    actor_id = _resolve_actor(token.strip(), settings)
+    raw_token = token.strip()
+    actor_id = _resolve_actor(raw_token, settings)
+    if actor_id is None:
+        credential_hash = token_sha256(raw_token)
+        with factory() as session:
+            agents = list(session.scalars(select(Agent)))
+            if any(
+                secrets.compare_digest(
+                    credential_hash,
+                    str(agent.policy_set.get("revoked_runtime_auth_token_sha256", "")),
+                )
+                for agent in agents
+            ):
+                raise AuthenticationError("token_revoked", "Credencial interna revocada")
+            matches = [
+                agent
+                for agent in agents
+                if secrets.compare_digest(
+                    credential_hash,
+                    str(agent.policy_set.get("runtime_auth_token_sha256", "")),
+                )
+            ]
+            if len(matches) != 1:
+                raise AuthenticationError("token_unknown", "Credencial interna desconocida")
+            dynamic_agent = matches[0]
+            if (
+                dynamic_agent.desired_state in INACTIVE_AGENT_STATES
+                or dynamic_agent.desired_state != "active"
+            ):
+                raise AuthenticationError("agent_inactive", "Identidad de agente no activa")
+            actor_id = f"agent:{dynamic_agent.slug}"
+            settings.actor_roles[actor_id] = dynamic_agent.role
+            return AuthenticatedIdentity(
+                actor_id=actor_id,
+                role=dynamic_agent.role,
+                agent_id=str(dynamic_agent.id),
+            )
     role = settings.actor_roles.get(actor_id)
     if role is None:
         raise AuthenticationError("identity_unknown", "Identidad interna no configurada")

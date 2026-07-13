@@ -45,6 +45,7 @@ ROLE_TOOL_ALLOWLIST: dict[str, set[str]] = {
     "researcher": {"task_create", "task_get", "task_comment", "task_block", "task_complete"},
     "developer": {"task_create", "task_get", "task_comment", "task_block", "task_complete"},
     "validator": {"task_get", "task_comment", "task_block", "task_complete"},
+    "data_steward": {"task_get"},
 }
 
 

@@ -113,7 +113,7 @@ def build_provisioning_router(settings: Settings, provisioner: AgentProvisioner)
     )
     def rollback(
         request_id: uuid.UUID,
-        _: AgentProvisionCommand,
+        command: AgentProvisionCommand,
         response: Response,
         session: SessionDependency,
         idempotency_key: IdempotencyKey,
@@ -126,6 +126,7 @@ def build_provisioning_router(settings: Settings, provisioner: AgentProvisioner)
                 request_id=request_id,
                 actor_id=actor_id,
                 idempotency_key=idempotency_key,
+                reason=command.reason,
             )
         except (ProvisioningError, AgentRequestLifecycleError, IdempotencyConflictError) as error:
             _raise_http(error)

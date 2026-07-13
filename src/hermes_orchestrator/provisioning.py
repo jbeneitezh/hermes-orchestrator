@@ -44,7 +44,13 @@ FORBIDDEN_SERVICE_KEYS = {
     "pid",
     "pid_mode",
 }
-ALLOWED_MOUNT_TARGETS = {"/opt/data", "/home/hermes", "/workspace", "/bootstrap"}
+ALLOWED_MOUNT_TARGETS = {
+    "/opt/data",
+    "/home/hermes",
+    "/workspace",
+    "/bootstrap",
+    "/datasets/tradix",
+}
 
 
 class ProvisioningError(Exception):
@@ -89,6 +95,7 @@ class ProvisionerResult(BaseModel):
     service_name: str
     config_digest: str
     health: str
+    credential_sha256: str | None = None
     runner_result: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -149,12 +156,14 @@ class ManagedAgentRenderer:
         managed_root: Path,
         data_root: Path,
         host_data_root: str,
+        dataset_root: str,
         worker_image: str,
         project_name: str,
     ) -> None:
         self.managed_root = managed_root.resolve()
         self.data_root = data_root.resolve()
         self.host_data_root = os.path.normpath(host_data_root)
+        self.dataset_root = os.path.normpath(dataset_root)
         self.worker_image = worker_image
         self.project_name = project_name
         self.compose_path = self.managed_root / "agents.compose.yaml"
@@ -200,7 +209,7 @@ class ManagedAgentRenderer:
 
     def _service(self, payload: ProvisioningPayload) -> dict[str, Any]:
         slug = payload.slug
-        return {
+        service: dict[str, Any] = {
             "image": self.worker_image,
             "restart": "unless-stopped",
             "read_only": True,
@@ -253,6 +262,16 @@ class ManagedAgentRenderer:
                 "io.hermes.agent.request": str(payload.request_id),
             },
         }
+        if payload.role == "data_steward":
+            service["volumes"].append(
+                {
+                    "type": "bind",
+                    "source": self.dataset_root,
+                    "target": "/datasets/tradix",
+                    "read_only": True,
+                }
+            )
+        return service
 
     def validate_document(self, document: dict[str, Any]) -> None:
         if set(document) != {"name", "services"}:
@@ -277,12 +296,17 @@ class ManagedAgentRenderer:
             for mount in service.get("volumes", []):
                 source = os.path.normpath(str(mount.get("source", "")))
                 target = str(mount.get("target", ""))
+                dataset_mount = (
+                    source == self.dataset_root
+                    and target == "/datasets/tradix"
+                    and mount.get("read_only") is True
+                )
                 try:
-                    inside = (
+                    inside = dataset_mount or (
                         os.path.commonpath((source, self.host_data_root)) == self.host_data_root
                     )
                 except ValueError:
-                    inside = False
+                    inside = dataset_mount
                 if not inside:
                     raise ProvisioningError("mount_root_denied", "Mount externo denegado")
                 if "docker.sock" in source.lower() or "docker.sock" in target.lower():
@@ -290,7 +314,7 @@ class ManagedAgentRenderer:
                 if target not in ALLOWED_MOUNT_TARGETS:
                     raise ProvisioningError("mount_target_denied", "Destino de mount denegado")
 
-    def _write_agent_files(self, payload: ProvisioningPayload) -> None:
+    def _write_agent_files(self, payload: ProvisioningPayload) -> str:
         agent_root = self.managed_root / "agents" / payload.slug
         runtime_root = self.data_root / payload.slug / "runtime"
         for leaf in ("hermes", "home", "workspace", "managed"):
@@ -344,12 +368,20 @@ class ManagedAgentRenderer:
             encoding="utf-8",
         )
         runtime_path = runtime_root / "runtime.env"
-        if not runtime_path.exists():
+        runtime_token: str | None = None
+        if runtime_path.exists():
+            for line in runtime_path.read_text(encoding="utf-8").splitlines():
+                key, separator, value = line.partition("=")
+                if separator and key == "MCP_HERMES_ORCHESTRATOR_API_KEY":
+                    runtime_token = value
+                    break
+        if runtime_token is None:
+            runtime_token = secrets.token_urlsafe(32)
             runtime_path.write_text(
                 "\n".join(
                     [
                         f"API_SERVER_KEY={secrets.token_urlsafe(32)}",
-                        f"MCP_HERMES_ORCHESTRATOR_API_KEY={secrets.token_urlsafe(32)}",
+                        f"MCP_HERMES_ORCHESTRATOR_API_KEY={runtime_token}",
                         "OPENAI_API_KEY="
                         + os.environ.get("CODEX_BROKER_CLIENT_KEY", "managed-at-runtime"),
                     ]
@@ -360,6 +392,7 @@ class ManagedAgentRenderer:
         with suppress(OSError):
             os.chown(runtime_path, -1, 0)
             runtime_path.chmod(0o640)
+        return hashlib.sha256(runtime_token.encode("utf-8")).hexdigest()
 
     def apply(self, payload: ProvisioningPayload, fleet: FleetManagedRunner) -> ProvisionerResult:
         self.managed_root.mkdir(parents=True, exist_ok=True)
@@ -369,13 +402,14 @@ class ManagedAgentRenderer:
         document.setdefault("services", {})[service_name] = self._service(payload)
         self.validate_document(document)
         current = json.dumps(document, sort_keys=True, separators=(",", ":"))
-        self._write_agent_files(payload)
+        credential_sha256 = self._write_agent_files(payload)
         if current == previous:
             return ProvisionerResult(
                 status="no_change",
                 service_name=service_name,
                 config_digest=self._digest(document),
                 health="unknown",
+                credential_sha256=credential_sha256,
             )
         self.compose_path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
         try:
@@ -400,6 +434,7 @@ class ManagedAgentRenderer:
             service_name=service_name,
             config_digest=self._digest(document),
             health=health,
+            credential_sha256=credential_sha256,
             runner_result=runner_result,
         )
 

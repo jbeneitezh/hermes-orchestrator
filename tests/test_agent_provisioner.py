@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import importlib
 import sys
 import uuid
@@ -35,6 +36,8 @@ PAYLOAD = {
     "capabilities": ["dataset_read"],
     "secret_refs": ["secret://codex/broker-client"],
 }
+DYNAMIC_TOKEN = "dynamic-data-steward-token"
+DYNAMIC_TOKEN_SHA256 = hashlib.sha256(DYNAMIC_TOKEN.encode()).hexdigest()
 
 
 class FakeFleet:
@@ -71,6 +74,7 @@ class StubProvisioner:
             service_name=f"worker-{payload.slug}",
             config_digest="sha256:f15-applied",
             health="healthy",
+            credential_sha256=DYNAMIC_TOKEN_SHA256,
         )
 
     def rollback(self, payload: ProvisioningPayload) -> ProvisionerResult:
@@ -97,6 +101,7 @@ def renderer_context(tmp_path: Path) -> tuple[ManagedAgentRenderer, FakeFleet, P
         managed_root=managed,
         data_root=data,
         host_data_root="/host_mnt/agent-data",
+        dataset_root="/host_mnt/tradix/dataset",
         worker_image="hermes-worker:test",
         project_name="hermes-test",
     )
@@ -155,6 +160,15 @@ def test_render_valido_es_cerrado_y_secreto_fuera_de_git(
     assert result.status == "applied"
     assert result.health == "healthy"
     assert set(service).isdisjoint({"command", "entrypoint", "privileged", "network_mode", "pid"})
+    dataset_mount = next(
+        mount for mount in service["volumes"] if mount["target"] == "/datasets/tradix"
+    )
+    assert dataset_mount == {
+        "type": "bind",
+        "source": "/host_mnt/tradix/dataset",
+        "target": "/datasets/tradix",
+        "read_only": True,
+    }
     assert not (managed / "agents" / payload.slug / "runtime.env").exists()
     assert (data / payload.slug / "runtime" / "runtime.env").exists()
     assert "secret://" in (managed / "agents" / payload.slug / "runtime.env.ref").read_text()
@@ -165,6 +179,7 @@ def test_render_valido_es_cerrado_y_secreto_fuera_de_git(
         "AGENT_PROVISIONER_MANAGED_ROOT": str(server_managed),
         "AGENT_PROVISIONER_DATA_ROOT": str(tmp_path / "server-data"),
         "AGENT_PROVISIONER_HOST_DATA_ROOT": "/host_mnt/server-data",
+        "AGENT_PROVISIONER_DATASET_ROOT": "/host_mnt/tradix/dataset",
         "AGENT_PROVISIONER_WORKER_IMAGE": "hermes-worker:test",
         "AGENT_PROVISIONER_PROJECT_NAME": "hermes-test",
         "AGENT_PROVISIONER_FLEET_URL": "http://fleet:8090",
@@ -247,6 +262,7 @@ def test_no_op_no_reaplica_fleet(renderer_context, monkeypatch: pytest.MonkeyPat
                 "service_name": "worker-data-steward-f15",
                 "config_digest": "sha256:http-client",
                 "health": "healthy",
+                "credential_sha256": DYNAMIC_TOKEN_SHA256,
                 "runner_result": {},
             }
 
@@ -475,6 +491,20 @@ def test_rollback_detiene_y_preserva_datos_logicos(api_context, renderer_context
         headers=auth_headers("agent:operator", **{"Idempotency-Key": "f15-provision-rollback"}),
         json={"reason": "Aplicar antes de rollback"},
     )
+    dynamic_headers = {
+        "Authorization": f"Bearer {DYNAMIC_TOKEN}",
+        "Accept": "application/json, text/event-stream",
+        "Content-Type": "application/json",
+    }
+    dynamic_tools = client.post(
+        "/mcp/",
+        headers=dynamic_headers,
+        json={"jsonrpc": "2.0", "id": 16, "method": "tools/list", "params": {}},
+    )
+    dynamic_agents_denied = client.get(
+        "/v1/agents",
+        headers={"Authorization": f"Bearer {DYNAMIC_TOKEN}"},
+    )
     headers = auth_headers("agent:operator", **{"Idempotency-Key": "f15-rollback-command"})
     rolled_back = client.post(
         f"/v1/agents/requests/{request_id}/rollback",
@@ -488,6 +518,9 @@ def test_rollback_detiene_y_preserva_datos_logicos(api_context, renderer_context
     )
 
     assert applied.status_code == 202, applied.text
+    assert dynamic_tools.status_code == 200, dynamic_tools.text
+    assert {tool["name"] for tool in dynamic_tools.json()["result"]["tools"]} == {"task_get"}
+    assert dynamic_agents_denied.status_code == 403
     assert rolled_back.status_code == 202
     assert rolled_back.json()["status"] == "rolled_back"
     assert replay.json()["replayed"] is True
@@ -498,6 +531,13 @@ def test_rollback_detiene_y_preserva_datos_logicos(api_context, renderer_context
         json={"reason": "Clave conflictiva"},
     )
     assert conflict.status_code == 409
+    revoked = client.post(
+        "/mcp/",
+        headers=dynamic_headers,
+        json={"jsonrpc": "2.0", "id": 17, "method": "tools/list", "params": {}},
+    )
+    assert revoked.status_code == 401
+    assert revoked.json()["detail"]["code"] == "token_revoked"
     orphan_id = approved_request(client, "orphan")
     orphan = client.post(
         f"/v1/agents/requests/{orphan_id}/rollback",
@@ -512,7 +552,15 @@ def test_rollback_detiene_y_preserva_datos_logicos(api_context, renderer_context
         events = list(
             session.scalars(select(AuditEvent).where(AuditEvent.aggregate_id == request_id))
         )
-        assert events[-1].event_type == "agent.provisioning_rolled_back"
+        request = session.get(AgentRequestRecord, uuid.UUID(request_id))
+        assert request is not None
+        assert request.status == "retired"
+        assert "runtime_auth_token_sha256" not in agent.policy_set
+        assert agent.policy_set["revoked_runtime_auth_token_sha256"] == DYNAMIC_TOKEN_SHA256
+        assert {event.event_type for event in events} >= {
+            "agent.provisioning_rolled_back",
+            "agent.request_retired",
+        }
 
     renderer, fleet, _, data = renderer_context
     payload = provisioning_payload(slug="data-steward-renderer-rollback")
@@ -527,6 +575,7 @@ def test_rollback_detiene_y_preserva_datos_logicos(api_context, renderer_context
         managed_root=data / "failure-managed",
         data_root=data / "failure-data",
         host_data_root="/host_mnt/failure-data",
+        dataset_root="/host_mnt/tradix/dataset",
         worker_image="hermes-worker:test",
         project_name="hermes-test",
     )

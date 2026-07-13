@@ -21,6 +21,7 @@ from hermes_orchestrator.services import (
     IdempotencyConflictError,
     get_agent_request,
     record_agent_request_application,
+    retire_agent_request,
 )
 
 
@@ -54,6 +55,7 @@ def _existing_result(session: Session, request_id: uuid.UUID, slug: str) -> Prov
         service_name=f"worker-{slug}",
         config_digest=instance.config_revision or "unknown",
         health=instance.health,
+        credential_sha256=str(agent.policy_set.get("runtime_auth_token_sha256", "")) or None,
     )
 
 
@@ -91,6 +93,22 @@ def provision_agent_request(
             error_detail=error.detail,
         )
         raise
+    if not result.credential_sha256:
+        missing_credential_error = ProvisioningError(
+            "runtime_credential_missing",
+            "El provisioner no devolvió la huella de la credencial dinámica",
+            503,
+        )
+        record_agent_request_application(
+            session,
+            request_id=request.id,
+            actor_id=actor_id,
+            idempotency_key=idempotency_key,
+            outcome="failed",
+            error_code=missing_credential_error.code,
+            error_detail=missing_credential_error.detail,
+        )
+        raise missing_credential_error
     record_agent_request_application(
         session,
         request_id=request.id,
@@ -117,6 +135,7 @@ def provision_agent_request(
     agent.policy_set = payload.policy_set | {
         "managed_by": "agent-provisioner",
         "request_id": str(request.id),
+        "runtime_auth_token_sha256": result.credential_sha256,
     }
     agent.capabilities = payload.capabilities
     agent.secret_refs = payload.secret_refs
@@ -155,6 +174,7 @@ def rollback_agent_request(
     request_id: uuid.UUID,
     actor_id: str,
     idempotency_key: str,
+    reason: str,
 ) -> AgentProvisioningResult:
     request = get_agent_request(session, request_id)
     payload = _payload(request.id, request.payload)
@@ -181,9 +201,12 @@ def rollback_agent_request(
         )
     result = provisioner.rollback(payload)
     agent.desired_state = "disabled"
-    agent.policy_set = agent.policy_set | {
+    policy_set = dict(agent.policy_set)
+    credential_hash = str(policy_set.pop("runtime_auth_token_sha256", ""))
+    agent.policy_set = policy_set | {
         "rollback_idempotency_key": idempotency_key,
         "rollback_config_digest": result.config_digest,
+        "revoked_runtime_auth_token_sha256": credential_hash,
     }
     for instance in agent.instances:
         instance.health = "stopped"
@@ -201,5 +224,11 @@ def rollback_agent_request(
             },
         )
     )
-    session.commit()
+    retire_agent_request(
+        session,
+        request_id=request.id,
+        actor_id=actor_id,
+        idempotency_key=idempotency_key,
+        reason=reason,
+    )
     return AgentProvisioningResult(request.id, result)

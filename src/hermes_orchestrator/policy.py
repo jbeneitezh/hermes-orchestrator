@@ -122,6 +122,7 @@ ROLE_PERMISSIONS: dict[str, frozenset[Permission]] = {
             Permission.OPERATIONS_READ,
         }
     ),
+    "data_steward": frozenset({Permission.TASKS_READ}),
 }
 
 
