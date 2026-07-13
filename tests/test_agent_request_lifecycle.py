@@ -95,7 +95,12 @@ def test_approve_exige_y_registra_decisor_independiente(lifecycle_context) -> No
     client, factory = lifecycle_context
     request_id = create_request(client, key="approve-request-001")
 
-    response = decide(client, request_id, decision="approve", key="approve-decision-001")
+    response = decide(
+        client,
+        request_id,
+        decision="approve",
+        key="approve-decision-001",  # gitleaks:allow
+    )
 
     assert response.status_code == 200
     assert response.json()["status"] == "approved"
@@ -118,7 +123,7 @@ def test_reject_cierra_la_solicitud_con_motivo(lifecycle_context) -> None:
         client,
         request_id,
         decision="reject",
-        key="reject-decision-001",
+        key="reject-decision-001",  # gitleaks:allow
         reason="La capacidad solicitada excede el mínimo necesario",
     )
 
@@ -187,7 +192,12 @@ def test_apply_failure_es_auditable_y_reintentable(lifecycle_context) -> None:
     client, factory = lifecycle_context
     request_id = create_request(client, key="apply-failure-request-001")
     assert (
-        decide(client, request_id, decision="approve", key="apply-failure-decision-001").status_code
+        decide(
+            client,
+            request_id,
+            decision="approve",
+            key="apply-failure-decision-001",  # gitleaks:allow
+        ).status_code
         == 200
     )
 
@@ -196,7 +206,7 @@ def test_apply_failure_es_auditable_y_reintentable(lifecycle_context) -> None:
             session,
             request_id=uuid.UUID(request_id),
             actor_id="system:agent-provisioner",
-            idempotency_key="apply-failure-attempt-001",
+            idempotency_key="apply-failure-attempt-001",  # gitleaks:allow
             outcome="failed",
             error_code="compose_template_unavailable",
             error_detail="No existe aún un renderer habilitado",
@@ -205,7 +215,7 @@ def test_apply_failure_es_auditable_y_reintentable(lifecycle_context) -> None:
             session,
             request_id=uuid.UUID(request_id),
             actor_id="system:agent-provisioner",
-            idempotency_key="apply-failure-attempt-001",
+            idempotency_key="apply-failure-attempt-001",  # gitleaks:allow
             outcome="failed",
             error_code="compose_template_unavailable",
             error_detail="No existe aún un renderer habilitado",
@@ -217,7 +227,7 @@ def test_apply_failure_es_auditable_y_reintentable(lifecycle_context) -> None:
                 session,
                 request_id=uuid.UUID(request_id),
                 actor_id="system:other-provisioner",
-                idempotency_key="apply-failure-attempt-001",
+                idempotency_key="apply-failure-attempt-001",  # gitleaks:allow
                 outcome="failed",
                 error_code="different",
             )
@@ -236,7 +246,7 @@ def test_retire_es_logico_idempotente_y_preserva_auditoria(lifecycle_context) ->
             session,
             request_id=uuid.UUID(request_id),
             actor_id="system:agent-provisioner",
-            idempotency_key="retire-application-001",
+            idempotency_key="retire-application-001",  # gitleaks:allow
             outcome="applied",
         )
         assert applied.request.status == "applied"
