@@ -73,9 +73,39 @@ class AgentRequestResponse(BaseModel):
     model_config = ConfigDict(extra="forbid", from_attributes=True)
 
     id: uuid.UUID
+    request_type: str
+    requested_by_actor_id: str
+    payload: dict[str, Any]
     status: str
-    replayed: bool
+    decision_idempotency_key: str | None
+    decided_by_actor_id: str | None
+    decision_reason: str | None
+    decided_at: datetime | None
+    application_idempotency_key: str | None
+    applied_by_actor_id: str | None
+    applied_at: datetime | None
+    application_error_code: str | None
+    application_error_detail: str | None
+    retirement_idempotency_key: str | None
+    retired_by_actor_id: str | None
+    retirement_reason: str | None
+    retired_at: datetime | None
+    replayed: bool = False
     created_at: datetime
+    updated_at: datetime
+
+
+class AgentRequestDecision(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    decision: Literal["approve", "reject"]
+    reason: str = Field(min_length=1, max_length=2000)
+
+
+class AgentRequestRetire(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(min_length=1, max_length=2000)
 
 
 class AgentInstanceResponse(BaseModel):

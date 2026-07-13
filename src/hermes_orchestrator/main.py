@@ -102,6 +102,7 @@ def create_app(
                 "postgresql",
                 "alembic",
                 "agent_catalog",
+                "agent_request_lifecycle",
                 "execution_profiles",
                 "deny_by_default_policy",
                 "append_only_audit",

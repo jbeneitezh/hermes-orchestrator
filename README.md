@@ -24,6 +24,9 @@ La API queda disponible en `http://localhost:8080`:
 - `GET /v1/capabilities`: publica las capacidades implementadas por esta versión.
 - `GET /v1/agents` y `GET /v1/agents/{id}`: catálogo observado.
 - `POST /v1/agents/requests`: solicitud idempotente de alta; no crea contenedores.
+- `GET /v1/agents/requests/{id}`: detalle y estado auditable de la solicitud.
+- `POST /v1/agents/requests/{id}/decide`: aprobación o rechazo independiente e idempotente.
+- `POST /v1/agents/requests/{id}/retire`: retirada lógica de una solicitud aplicada o fallida.
 - `GET /v1/execution-profiles`: perfiles efectivos permitidos.
 - `POST /v1/tasks`, `GET /v1/tasks/{id}`: objetivo durable separado de sus intentos.
 - `POST /v1/tasks/{id}/dispatch|comments|cancel`: comandos idempotentes del ciclo.
@@ -63,6 +66,8 @@ docker compose down -v
 No guardes secretos en `.env.example` ni en el repositorio. La variable `HERMES_ORCHESTRATOR_DATABASE_URL` acepta la URL de PostgreSQL del entorno.
 
 Las rutas gobernadas exigen `X-Actor-Id`. El rol se resuelve desde `HERMES_ORCHESTRATOR_ACTOR_ROLES`; el cliente no puede declarar ni elevar su rol. Las mutaciones exigen además `Idempotency-Key`. Esta resolución es el bootstrap de confianza para la red privada y se sustituirá por autenticación fuerte sin cambiar el servicio de políticas.
+
+Una `AgentRequest` transita de `pending` a `approved` o `rejected`. La aprobación nunca puede hacerla el solicitante. El provisionador interno puede registrar después `applied` o `apply_failed`; este contrato es el punto de entrada de F15 y en F14 todavía no renderiza ni modifica Compose. La retirada cambia el estado a `retired` y conserva solicitud, decisiones y eventos de auditoría.
 
 El API no monta Docker. `fleet-reconciler` es un proceso privado separado que valida el Compose renderizado y solo ejecuta `config`, `pull` y `up --no-deps` sobre workers allowlisted. El socket no se entrega al líder ni al operador.
 

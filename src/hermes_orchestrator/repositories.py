@@ -36,6 +36,9 @@ class AgentRequestRepository:
             select(AgentRequestRecord).where(AgentRequestRecord.idempotency_key == key)
         )
 
+    def get(self, request_id: uuid.UUID) -> AgentRequestRecord | None:
+        return self.session.get(AgentRequestRecord, request_id)
+
     def add(self, request: AgentRequestRecord) -> None:
         self.session.add(request)
 

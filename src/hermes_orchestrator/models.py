@@ -108,7 +108,26 @@ class AgentRequestRecord(Base):
     request_type: Mapped[str] = mapped_column(String(30), default="create")
     payload: Mapped[dict[str, Any]] = mapped_column(JSON)
     status: Mapped[str] = mapped_column(String(30), default="pending")
+    decision_idempotency_key: Mapped[str | None] = mapped_column(String(160), unique=True)
+    decision_hash: Mapped[str | None] = mapped_column(String(64))
+    decided_by_actor_id: Mapped[str | None] = mapped_column(String(160), index=True)
+    decision_reason: Mapped[str | None] = mapped_column(Text)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    application_idempotency_key: Mapped[str | None] = mapped_column(String(160), unique=True)
+    application_hash: Mapped[str | None] = mapped_column(String(64))
+    applied_by_actor_id: Mapped[str | None] = mapped_column(String(160), index=True)
+    applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    application_error_code: Mapped[str | None] = mapped_column(String(100))
+    application_error_detail: Mapped[str | None] = mapped_column(Text)
+    retirement_idempotency_key: Mapped[str | None] = mapped_column(String(160), unique=True)
+    retirement_hash: Mapped[str | None] = mapped_column(String(64))
+    retired_by_actor_id: Mapped[str | None] = mapped_column(String(160), index=True)
+    retirement_reason: Mapped[str | None] = mapped_column(Text)
+    retired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
 
 
 class AuditEvent(Base):
