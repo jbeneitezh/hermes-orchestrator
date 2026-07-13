@@ -17,15 +17,19 @@ class OperationsReader(Protocol):
 
 
 class PublicOperationsApiReader:
-    def __init__(self, base_url: str, actor_id: str) -> None:
+    def __init__(self, base_url: str, actor_id: str, api_token: str) -> None:
         self.base_url = base_url.rstrip("/")
         self.actor_id = actor_id
+        self.api_token = api_token
 
     def get(self, path: str, query: dict[str, str] | None = None) -> dict[str, Any]:
         suffix = f"?{urllib.parse.urlencode(query)}" if query else ""
         request = urllib.request.Request(
             f"{self.base_url}{path}{suffix}",
-            headers={"X-Actor-Id": self.actor_id},
+            headers={
+                "Authorization": f"Bearer {self.api_token}",
+                "X-Actor-Id": self.actor_id,
+            },
         )
         with urllib.request.urlopen(request, timeout=20) as response:
             payload = json.loads(response.read())
@@ -158,6 +162,7 @@ def main() -> None:
     reader = PublicOperationsApiReader(
         settings.operations_watchdog_api_url,
         settings.operations_watchdog_actor_id,
+        settings.operations_watchdog_api_token.get_secret_value(),
     )
     while True:
         try:

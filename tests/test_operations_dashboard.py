@@ -26,8 +26,12 @@ from hermes_orchestrator.operations_watchdog import (
     _record_failure,
     evaluate_watchdog,
 )
+from hermes_orchestrator.operations_watchdog import (
+    main as watchdog_main,
+)
+from tests.auth_helpers import auth_headers, seed_active_auth_agents, token_for, token_settings
 
-OPERATOR = {"X-Actor-Id": "agent:operator"}
+OPERATOR = auth_headers("agent:operator")
 
 
 class FakeFleetRunner:
@@ -61,10 +65,12 @@ def operations_context(tmp_path: Path, *, runner: FakeFleetRunner | None = None)
         database_url=f"sqlite+pysqlite:///{database_path.as_posix()}",
         operations_watchdog_state_path=str(state_path),
         operations_stale_after_seconds=300,
+        **token_settings("agent:operator"),
     )
     app = create_app(settings, fleet_runner=runner or FakeFleetRunner())
     Base.metadata.create_all(app.state.engine)
     factory: sessionmaker[Session] = app.state.session_factory
+    seed_active_auth_agents(factory, settings)
     with TestClient(app) as client:
         yield client, factory, state_path
 
@@ -164,7 +170,7 @@ def test_filters_rollups_fleet_and_dashboard_use_six_public_routes(tmp_path: Pat
             f"/v1/operations/usage?group_by=operation&operation_id={operation_id}",
             headers=OPERATOR,
         )
-        dashboard = client.get("/operations")
+        dashboard = client.get("/operations", headers=OPERATOR)
 
         assert fleet.status_code == 200
         assert fleet.json()["status"] == "ready"
@@ -317,7 +323,7 @@ def test_idle_window_has_zero_model_calls_and_quota_exposes_counter(tmp_path: Pa
         assert quota.status_code == 200
         assert quota.json()["watchdog"]["model_calls"] == 0
         assert quota.json()["watchdog"]["idle_checks"] == 1
-        assert client.get("/v1/operations/quota").status_code == 422
+        assert client.get("/v1/operations/quota").status_code == 401
 
 
 def test_fleet_failure_and_invalid_watchdog_state_are_safe(tmp_path: Path) -> None:
@@ -332,7 +338,7 @@ def test_fleet_failure_and_invalid_watchdog_state_are_safe(tmp_path: Path) -> No
         assert quota.json()["watchdog"] == {"status": "invalid", "model_calls": 0}
         assert (
             client.get("/v1/operations/tasks", headers={"X-Actor-Id": "agent:unknown"}).status_code
-            == 403
+            == 401
         )
 
 
@@ -352,6 +358,7 @@ def test_public_watchdog_reader_uses_only_control_plane_api(monkeypatch) -> None
     def fake_urlopen(request, timeout: int):
         captured["url"] = request.full_url
         captured["actor"] = request.headers["X-actor-id"]
+        captured["bearer"] = request.headers["Authorization"].startswith("Bearer ")
         captured["timeout"] = timeout
         return Response()
 
@@ -359,13 +366,51 @@ def test_public_watchdog_reader_uses_only_control_plane_api(monkeypatch) -> None
         "hermes_orchestrator.operations_watchdog.urllib.request.urlopen",
         fake_urlopen,
     )
-    reader = PublicOperationsApiReader("http://control/", "agent:operator")
+    reader = PublicOperationsApiReader(
+        "http://control/", "agent:operator", token_for("agent:operator")
+    )
     result = reader.get("/v1/operations/tasks", {"active_only": "true"})
     assert result == {"active_count": 0}
     assert captured == {
         "url": "http://control/v1/operations/tasks?active_only=true",
         "actor": "agent:operator",
+        "bearer": True,
         "timeout": 20,
+    }
+
+
+def test_watchdog_main_uses_bearer_setting_once(monkeypatch, tmp_path: Path) -> None:
+    settings = Settings(
+        environment="test",
+        database_url="sqlite+pysqlite:///:memory:",
+        operations_watchdog_state_path=str(tmp_path / "main-state.json"),
+        operations_watchdog_api_token=token_for("agent:operator"),
+    )
+    captured: dict[str, Any] = {}
+
+    def reader_factory(base_url: str, actor_id: str, api_token: str):
+        captured.update(base_url=base_url, actor_id=actor_id, token_matches=bool(api_token))
+        return FakeOperationsReader(active=0, events=[])
+
+    def evaluate(reader, state_path: str, **kwargs):
+        captured.update(state_path=state_path, interval=kwargs["summary_interval_seconds"])
+        return {"status": "idle"}
+
+    monkeypatch.setattr("hermes_orchestrator.operations_watchdog.Settings", lambda: settings)
+    monkeypatch.setattr(
+        "hermes_orchestrator.operations_watchdog.PublicOperationsApiReader", reader_factory
+    )
+    monkeypatch.setattr("hermes_orchestrator.operations_watchdog.evaluate_watchdog", evaluate)
+    monkeypatch.setattr("sys.argv", ["operations-watchdog", "--once"])
+
+    watchdog_main()
+
+    assert captured == {
+        "base_url": "http://orchestrator-api:8080",
+        "actor_id": "agent:operator",
+        "token_matches": True,
+        "state_path": str(tmp_path / "main-state.json"),
+        "interval": 9000,
     }
 
 

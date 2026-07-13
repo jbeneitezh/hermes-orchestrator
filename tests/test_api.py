@@ -74,6 +74,7 @@ def test_capabilities_publish_only_bootstrap_features(monkeypatch) -> None:
             "operations_dashboard",
             "reconnectable_timeline",
             "process_watchdog_no_llm",
+            "bearer_internal_auth",
         ],
     }
 

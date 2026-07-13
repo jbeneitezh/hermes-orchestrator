@@ -12,10 +12,11 @@ from sqlalchemy.orm import Session, sessionmaker
 from hermes_orchestrator.config import Settings
 from hermes_orchestrator.main import create_app
 from hermes_orchestrator.models import AuditEvent, Base, EnvironmentAction
+from tests.auth_helpers import auth_headers, seed_active_auth_agents, token_settings
 
-LEADER = {"X-Actor-Id": "agent:leader"}
-DEVELOPER = {"X-Actor-Id": "agent:developer"}
-RESEARCHER = {"X-Actor-Id": "agent:researcher"}
+LEADER = auth_headers("agent:leader")
+DEVELOPER = auth_headers("agent:developer")
+RESEARCHER = auth_headers("agent:researcher")
 REPOSITORY = "jbeneitezh/tradix"
 SHA_A = "a" * 40
 SHA_B = "b" * 40
@@ -32,10 +33,12 @@ def environment_context(tmp_path: Path):
         environment_local_port_end=23001,
         environment_local_default_ttl_seconds=3600,
         environment_local_max_ttl_seconds=7200,
+        **token_settings("agent:leader", "agent:developer", "agent:researcher"),
     )
     app = create_app(settings)
     Base.metadata.create_all(app.state.engine)
     factory: sessionmaker[Session] = app.state.session_factory
+    seed_active_auth_agents(factory, settings)
     with TestClient(app) as client:
         yield client, factory
 
@@ -189,7 +192,7 @@ def test_dev_deploy_tracks_mutable_branch_and_supersedes_previous(tmp_path: Path
         assert dev[0]["ref_kind"] == "branch"
         assert dev[0]["ref_value"] == "fix/f17"
         assert client.get("/v1/environments", headers=RESEARCHER).status_code == 200
-        assert client.get("/v1/environments").status_code == 422
+        assert client.get("/v1/environments").status_code == 401
 
 
 def test_pre_is_immutable_and_fix_returns_to_dev_branch(tmp_path: Path) -> None:
@@ -360,7 +363,7 @@ def test_rejected_edges_replays_and_capacity_are_governed(tmp_path: Path) -> Non
     with environment_context(tmp_path) as (client, factory):
         assert (
             client.get("/v1/environments", headers={"X-Actor-Id": "agent:unknown"}).status_code
-            == 403
+            == 401
         )
         unknown_expire = client.post(
             f"/v1/environments/deployments/{uuid.uuid4()}/expire",

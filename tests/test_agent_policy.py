@@ -23,9 +23,10 @@ from hermes_orchestrator.models import (
     ExecutionProfile,
 )
 from hermes_orchestrator.policy import communication_is_allowed
+from tests.auth_helpers import auth_headers, seed_active_auth_agents, token_settings
 
-LEADER_HEADERS = {"X-Actor-Id": "agent:leader"}
-OWNER_HEADERS = {"X-Actor-Id": "user:owner"}
+LEADER_HEADERS = auth_headers("agent:leader")
+OWNER_HEADERS = auth_headers("user:owner")
 AGENT_PAYLOAD = {
     "slug": "researcher-01",
     "role": "researcher",
@@ -49,9 +50,11 @@ def catalog_context(
             "agent:leader": "leader",
             "agent:operator": "operator",
         },
+        **token_settings("user:owner", "agent:leader", "agent:operator"),
     )
     app = create_app(settings)
     Base.metadata.create_all(app.state.engine)
+    seed_active_auth_agents(app.state.session_factory, settings)
     with TestClient(app) as client:
         yield client, app.state.session_factory
 
@@ -80,10 +83,10 @@ def test_policy_allows_known_roles_and_denies_by_default(catalog_context) -> Non
     client, _ = catalog_context
 
     assert client.get("/v1/agents", headers=LEADER_HEADERS).status_code == 200
-    assert client.get("/v1/agents", headers={"X-Actor-Id": "unknown"}).status_code == 403
+    assert client.get("/v1/agents", headers={"X-Actor-Id": "unknown"}).status_code == 401
     denied_request = client.post(
         "/v1/agents/requests",
-        headers={"X-Actor-Id": "agent:operator", "Idempotency-Key": "operator-request"},
+        headers=auth_headers("agent:operator", **{"Idempotency-Key": "operator-request"}),
         json=AGENT_PAYLOAD,
     )
     assert denied_request.status_code == 403
@@ -94,13 +97,13 @@ def test_communication_requires_an_active_matching_edge(catalog_context) -> None
     now = datetime.now(UTC)
     with factory() as session:
         source = Agent(
-            slug="leader",
+            slug="source-leader",
             role="leader",
             description="Coordina",
             owner_actor_id="user:owner",
         )
         target = Agent(
-            slug="developer",
+            slug="source-developer",
             role="developer",
             description="Implementa",
             owner_actor_id="user:owner",
@@ -144,7 +147,9 @@ def test_actor_cannot_escalate_with_a_role_header(catalog_context) -> None:
     client, _ = catalog_context
     response = client.get(
         "/v1/agents",
-        headers={"X-Actor-Id": "unknown", "X-Actor-Role": "owner"},
+        headers=auth_headers(
+            "agent:operator", **{"X-Actor-Id": "unknown", "X-Actor-Role": "owner"}
+        ),
     )
     assert response.status_code == 403
 
@@ -210,7 +215,7 @@ def test_agent_list_and_detail_include_observed_instances(catalog_context) -> No
     detail = client.get(f"/v1/agents/{agent_id}", headers=LEADER_HEADERS)
 
     assert listing.status_code == 200
-    assert listing.json()[0]["slug"] == "validator"
+    assert "validator" in {item["slug"] for item in listing.json()}
     assert detail.status_code == 200
     assert detail.json()["instances"][0]["container_ref"] == "hermes-validator-1"
     missing = client.get(f"/v1/agents/{uuid.uuid4()}", headers=LEADER_HEADERS)

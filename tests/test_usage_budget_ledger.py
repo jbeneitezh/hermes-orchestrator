@@ -22,9 +22,10 @@ from hermes_orchestrator.models import (
     UsageLedger,
 )
 from hermes_orchestrator.task_services import transition_run
+from tests.auth_helpers import auth_headers, seed_active_auth_agents, token_settings
 
-LEADER = {"X-Actor-Id": "agent:leader"}
-OPERATOR = {"X-Actor-Id": "agent:operator"}
+LEADER = auth_headers("agent:leader")
+OPERATOR = auth_headers("agent:operator")
 
 
 @contextmanager
@@ -37,11 +38,13 @@ def usage_context(tmp_path: Path, **overrides: Any):
         usage_max_fan_out=3,
         usage_soft_token_limit=5_000_000,
         usage_hard_token_limit=10_000_000,
+        **token_settings("agent:leader", "agent:operator"),
         **overrides,
     )
     app = create_app(settings)
     Base.metadata.create_all(app.state.engine)
     factory: sessionmaker[Session] = app.state.session_factory
+    seed_active_auth_agents(factory, settings)
     with TestClient(app) as client:
         yield client, factory, settings
 
@@ -417,7 +420,7 @@ def test_database_override_missing_detail_and_ingest_conflict(tmp_path: Path) ->
         assert status_response.status_code == 200
         assert any(item["source"] == "database" for item in status_response.json()["budgets"])
         assert missing.status_code == 404
-        assert denied.status_code == 403
+        assert denied.status_code == 401
         assert missing_reset.status_code == 404
         assert replayed is True
         assert conflict_code == "usage_ingest_conflict"

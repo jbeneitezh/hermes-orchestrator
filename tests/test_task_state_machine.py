@@ -20,10 +20,11 @@ from hermes_orchestrator.task_services import (
     resolve_approval,
     transition_run,
 )
+from tests.auth_helpers import auth_headers, seed_active_auth_agents, token_settings
 
-LEADER = {"X-Actor-Id": "agent:leader"}
-DEVELOPER = {"X-Actor-Id": "agent:developer"}
-VALIDATOR = {"X-Actor-Id": "agent:validator"}
+LEADER = auth_headers("agent:leader")
+DEVELOPER = auth_headers("agent:developer")
+VALIDATOR = auth_headers("agent:validator")
 
 
 @pytest.fixture
@@ -41,9 +42,17 @@ def lifecycle_context(
             "agent:researcher": "researcher",
             "agent:validator": "validator",
         },
+        **token_settings(
+            "user:owner",
+            "agent:leader",
+            "agent:developer",
+            "agent:researcher",
+            "agent:validator",
+        ),
     )
     app = create_app(settings)
     Base.metadata.create_all(app.state.engine)
+    seed_active_auth_agents(app.state.session_factory, settings)
     with TestClient(app) as client:
         yield client, app.state.session_factory
 
@@ -395,4 +404,4 @@ def test_task_create_replays_and_rejects_key_collision(lifecycle_context) -> Non
     assert replay.json()["replayed"] is True
     assert collision.status_code == 409
     assert collision.json()["detail"]["code"] == "idempotency_conflict"
-    assert forbidden.status_code == 403
+    assert forbidden.status_code == 401

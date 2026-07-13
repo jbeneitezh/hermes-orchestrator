@@ -22,6 +22,7 @@ from hermes_orchestrator.mcp_server import (
 )
 from hermes_orchestrator.models import Agent, Base, CommunicationEdge, Run
 from hermes_orchestrator.usage_services import ingest_run_usage
+from tests.auth_helpers import auth_headers, seed_active_auth_agents, token_settings
 
 LEADER = "agent:leader"
 DEVELOPER = "agent:developer"
@@ -36,6 +37,7 @@ def mcp_context(
     settings = Settings(
         environment="test",
         database_url=f"sqlite+pysqlite:///{database_path.as_posix()}",
+        **token_settings(LEADER, DEVELOPER, RESEARCHER),
     )
     app = create_app(settings)
     Base.metadata.create_all(app.state.engine)
@@ -86,6 +88,7 @@ def mcp_context(
         session.commit()
         for agent in agents.values():
             session.expunge(agent)
+    seed_active_auth_agents(app.state.session_factory, settings)
     with TestClient(app) as client:
         yield client, app.state.session_factory, agents, settings
 
@@ -113,6 +116,7 @@ def mcp_post(client: TestClient, agent: Agent, body: dict[str, Any]):
     return client.post(
         "/mcp/",
         headers={
+            **auth_headers(f"agent:{agent.slug}"),
             "X-Agent-Id": str(agent.id),
             "Accept": "application/json, text/event-stream",
             "Content-Type": "application/json",
@@ -190,7 +194,7 @@ def test_allowed_dispatch_and_rest_mcp_parity(mcp_context) -> None:
         12,
     )["structuredContent"]
 
-    rest = client.get(f"/v1/tasks/{created['task']['id']}", headers={"X-Actor-Id": LEADER}).json()
+    rest = client.get(f"/v1/tasks/{created['task']['id']}", headers=auth_headers(LEADER)).json()
     assert replayed["replayed"] is True
     assert dispatched["run"]["status"] == "dispatching"
     assert rest["id"] == created["task"]["id"]
@@ -293,7 +297,8 @@ def test_authentication_and_denied_tool_errors_are_redacted(mcp_context) -> None
         21,
     )
 
-    assert listed.json()["result"]["tools"] == []
+    assert listed.status_code == 401
+    assert listed.json()["detail"]["code"] == "token_unknown"
     assert denied["isError"] is True
     assert denied["structuredContent"]["error"]["code"] == "permission_denied"
     assert "token" not in str(denied).lower()

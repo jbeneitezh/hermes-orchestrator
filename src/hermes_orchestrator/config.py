@@ -3,6 +3,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Literal
 
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -26,6 +27,8 @@ class Settings(BaseSettings):
         "agent:developer": "developer",
         "agent:validator": "validator",
     }
+    internal_auth_tokens: dict[str, SecretStr] = {}
+    internal_auth_revoked_token_hashes: set[str] = set()
     fleet_runner_url: str = "http://fleet-reconciler:8090"
     fleet_runner_token: str = ""
     fleet_project_name: str = "hermes-tradix-f11"
@@ -55,6 +58,7 @@ class Settings(BaseSettings):
     operations_watchdog_state_path: str = "/var/lib/hermes-orchestrator/watchdog/state.json"
     operations_watchdog_api_url: str = "http://orchestrator-api:8080"
     operations_watchdog_actor_id: str = "agent:operator"
+    operations_watchdog_api_token: SecretStr = SecretStr("")
     operations_watchdog_check_seconds: int = 300
     operations_summary_interval_seconds: int = 9000
     operations_stale_after_seconds: int = 1800

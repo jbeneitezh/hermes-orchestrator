@@ -1,1 +1,1 @@
-"""Pruebas del orquestador Hermes."""
+"""Fixtures y suites del orquestador Hermes."""

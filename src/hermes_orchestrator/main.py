@@ -10,6 +10,7 @@ from sqlalchemy.engine import Engine
 
 from hermes_orchestrator import __version__
 from hermes_orchestrator.api import build_catalog_router
+from hermes_orchestrator.auth import InternalAuthMiddleware
 from hermes_orchestrator.config import Settings, get_settings
 from hermes_orchestrator.database import (
     create_database_engine,
@@ -47,6 +48,11 @@ def create_app(
     )
     app.state.engine = engine
     app.state.session_factory = session_factory
+    app.add_middleware(
+        InternalAuthMiddleware,
+        settings=resolved_settings,
+        session_factory=session_factory,
+    )
     app.include_router(build_catalog_router(resolved_settings))
     app.include_router(build_task_router(resolved_settings))
     app.include_router(build_usage_router(resolved_settings))
@@ -120,6 +126,7 @@ def create_app(
                 "operations_dashboard",
                 "reconnectable_timeline",
                 "process_watchdog_no_llm",
+                "bearer_internal_auth",
             ],
         )
 

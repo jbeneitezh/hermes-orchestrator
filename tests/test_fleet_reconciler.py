@@ -14,8 +14,9 @@ from hermes_orchestrator.config import Settings
 from hermes_orchestrator.fleet_runner import HttpFleetRunnerClient
 from hermes_orchestrator.main import create_app
 from hermes_orchestrator.models import AuditEvent, Base, FleetReconcileRecord
+from tests.auth_helpers import auth_headers, seed_active_auth_agents, token_settings
 
-OPERATOR = {"X-Actor-Id": "agent:operator"}
+OPERATOR = auth_headers("agent:operator")
 VALIDATOR_ID = "agent:validator"
 COMPOSE_PATH = "/fleet/compose/compose.yaml"
 DATA_ROOT = "/fleet/data"
@@ -75,10 +76,12 @@ def fleet_context(
         fleet_compose_path=COMPOSE_PATH,
         fleet_allowed_worker_image="hermes-worker:test",
         fleet_allowed_mount_roots=[DATA_ROOT, "/fleet/tradix", "/fleet/compose"],
+        **token_settings("user:owner", "agent:leader", "agent:operator", VALIDATOR_ID),
     )
     runner = FakeFleetRunner()
     app = create_app(settings, fleet_runner=runner)
     Base.metadata.create_all(app.state.engine)
+    seed_active_auth_agents(app.state.session_factory, settings)
     with TestClient(app) as client:
         yield client, app.state.session_factory, runner
 
@@ -122,7 +125,7 @@ def test_status_reports_observed_fleet_and_denies_unknown_actor(fleet_context) -
     assert response.status_code == 200
     assert response.json()["compose_digest"] == "sha256:compose"
     assert response.json()["last_reconcile"] is None
-    assert denied.status_code == 403
+    assert denied.status_code == 401
     assert runner.status_calls == 1
 
 
