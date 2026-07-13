@@ -24,6 +24,7 @@ from hermes_orchestrator.task_services import (
     dispatch_task,
     get_task,
 )
+from hermes_orchestrator.usage_services import summarize_usage
 
 TOOL_PERMISSIONS: dict[str, Permission] = {
     "agents_list": Permission.AGENTS_READ,
@@ -281,6 +282,7 @@ def _execute_tool(
                 "approval_action": parsed.approval_action,
                 "approval_ttl_seconds": parsed.approval_ttl_seconds,
             },
+            settings=settings,
         )
         return {
             "run": _run_summary(cast(Run, result.value)),
@@ -318,30 +320,11 @@ def _execute_tool(
 
     if tool_name == "usage_summary":
         parsed = McpUsageSummary.model_validate(arguments)
-        statement = select(Run)
-        if parsed.operation_id is not None:
-            statement = statement.where(Run.operation_id == parsed.operation_id)
-        runs = list(session.scalars(statement))
-        groups: dict[tuple[str, str, str], dict[str, Any]] = {}
-        for run in runs:
-            key = (str(run.operation_id), run.worker_actor_id, run.requested_profile_id)
-            group = groups.setdefault(
-                key,
-                {
-                    "operation_id": key[0],
-                    "worker_actor_id": key[1],
-                    "profile_id": key[2],
-                    "runs": 0,
-                    "input_tokens": 0,
-                    "output_tokens": 0,
-                    "reasoning_tokens": 0,
-                },
-            )
-            group["runs"] += 1
-            for field in ("input_tokens", "output_tokens", "reasoning_tokens"):
-                value = run.usage_snapshot.get(field, 0)
-                group[field] += value if isinstance(value, int) else 0
-        return {"groups": list(groups.values()), "cost_status": "included"}
+        return summarize_usage(
+            session,
+            group_by="operation",
+            operation_id=parsed.operation_id,
+        )
 
     raise McpDomainError("tool_not_found", "Herramienta desconocida")
 

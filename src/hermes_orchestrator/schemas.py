@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from decimal import Decimal
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -341,3 +342,77 @@ class FleetStatusResponse(BaseModel):
     compose_digest: str
     services: list[dict[str, Any]]
     last_reconcile: FleetReconcileResponse | None
+
+
+class UsageDetailResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", from_attributes=True)
+
+    id: uuid.UUID
+    run_id: uuid.UUID
+    operation_id: uuid.UUID
+    task_id: uuid.UUID
+    parent_run_id: uuid.UUID | None
+    project_id: str
+    category: str
+    requesting_agent_id: str
+    executing_agent_id: str
+    requested_profile: str
+    effective_profile: str | None
+    model: str | None
+    provider: str | None
+    reasoning_effort: str | None
+    input_tokens: int | None
+    output_tokens: int | None
+    reasoning_tokens: int | None
+    cache_read_tokens: int | None
+    cache_write_tokens: int | None
+    api_calls: int | None
+    estimated_cost: Decimal | None
+    actual_cost: Decimal | None
+    currency: str | None
+    cost_status: str
+    cost_source: str | None
+    quota_status: str
+    quota_reset_at: datetime | None
+    started_at: datetime | None
+    finished_at: datetime | None
+    duration_ms: int | None
+    outcome: str
+    retry_number: int
+    created_at: datetime
+
+
+class UsageSummaryResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    group_by: Literal["operation", "agent", "profile", "day"]
+    groups: list[dict[str, Any]]
+    entries: int
+    cost_status: Literal["ledger"]
+
+
+class UsageControlStatusResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    budgets: list[dict[str, Any]]
+    quota: list[dict[str, Any]]
+    circuits: list[dict[str, Any]]
+    audit: list[dict[str, Any]]
+
+
+class CircuitResetCommand(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(min_length=1, max_length=2000)
+
+
+class CircuitResetResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", from_attributes=True)
+
+    id: uuid.UUID
+    worker_actor_id: str
+    profile_id: str
+    state: Literal["closed"]
+    consecutive_failures: int
+    reset_by_actor_id: str | None
+    reset_reason: str | None

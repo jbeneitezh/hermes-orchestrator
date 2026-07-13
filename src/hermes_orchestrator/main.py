@@ -21,6 +21,7 @@ from hermes_orchestrator.fleet_runner import FleetRunner, HttpFleetRunnerClient
 from hermes_orchestrator.mcp_server import build_mcp_server
 from hermes_orchestrator.schemas import CapabilitiesResponse, HealthResponse
 from hermes_orchestrator.task_api import build_task_router
+from hermes_orchestrator.usage_api import build_usage_router
 
 
 def create_app(
@@ -46,6 +47,7 @@ def create_app(
     app.state.session_factory = session_factory
     app.include_router(build_catalog_router(resolved_settings))
     app.include_router(build_task_router(resolved_settings))
+    app.include_router(build_usage_router(resolved_settings))
     app.include_router(
         build_fleet_router(
             resolved_settings,
@@ -102,6 +104,10 @@ def create_app(
                 "fleet_status",
                 "fleet_reconcile_request",
                 "fleet_allowlisted_runner",
+                "usage_ledger",
+                "budget_dispatch_controls",
+                "quota_status",
+                "circuit_breaker",
             ],
         )
 

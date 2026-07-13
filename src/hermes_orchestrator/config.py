@@ -38,6 +38,15 @@ class Settings(BaseSettings):
         "/host_mnt/d/Personal/hermes-tradix/tradix",
         "/host_mnt/d/Personal/hermes-tradix/hermes-agents-compose",
     ]
+    usage_project_id: str = "tradix"
+    usage_window_seconds: int = 86400
+    usage_soft_token_limit: int = 5_000_000
+    usage_hard_token_limit: int = 10_000_000
+    usage_max_concurrent_runs: int = 1
+    usage_max_fan_out: int = 3
+    usage_max_retries: int = 1
+    usage_circuit_failure_threshold: int = 3
+    usage_circuit_cooldown_seconds: int = 3600
 
 
 @lru_cache

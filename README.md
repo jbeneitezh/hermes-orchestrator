@@ -1,6 +1,6 @@
 # Hermes Orchestrator
 
-Plano de control para coordinar instancias aisladas de Hermes Agent. Este primer vertical slice establece la API, la configuración tipada y PostgreSQL; todavía no implementa agentes ni tareas.
+Plano de control para coordinar instancias aisladas de Hermes Agent. Mantiene catálogo, tareas/runs, ACL, MCP, reconciliación de flota y contabilidad de uso sobre PostgreSQL.
 
 ## Requisitos
 
@@ -30,6 +30,10 @@ La API queda disponible en `http://localhost:8080`:
 - `GET /v1/runs/{id}`, `POST /v1/runs/{id}/approval`: intento y gate revisable.
 - `GET /v1/fleet/status`: estado del Compose observado por el runner privado.
 - `POST /v1/fleet/reconcile-requests`: dry-run/apply idempotente con allowlists y approval independiente.
+- `GET /v1/usage/summary`: rollups por operación, agente, perfil o día sin convertir desconocidos en cero.
+- `GET /v1/usage/runs/{run_id}`: asiento contable durable de un run.
+- `GET /v1/usage/control-status`: presupuestos, cuota, circuitos y auditoría de controles.
+- `POST /v1/usage/circuits/{id}/reset`: reset auditado, reservado al operador/owner.
 - `GET /docs`: OpenAPI interactivo generado por FastAPI.
 
 ## Calidad
@@ -55,6 +59,8 @@ No guardes secretos en `.env.example` ni en el repositorio. La variable `HERMES_
 Las rutas gobernadas exigen `X-Actor-Id`. El rol se resuelve desde `HERMES_ORCHESTRATOR_ACTOR_ROLES`; el cliente no puede declarar ni elevar su rol. Las mutaciones exigen además `Idempotency-Key`. Esta resolución es el bootstrap de confianza para la red privada y se sustituirá por autenticación fuerte sin cambiar el servicio de políticas.
 
 El API no monta Docker. `fleet-reconciler` es un proceso privado separado que valida el Compose renderizado y solo ejecuta `config`, `pull` y `up --no-deps` sobre workers allowlisted. El socket no se entrega al líder ni al operador.
+
+Cada run terminal genera como máximo un asiento en `usage_ledger`. Antes de cada dispatch se evalúan concurrencia, fan-out, retry, cuota, presupuesto soft/hard y circuito worker/perfil. Los límites por defecto provienen de `HERMES_ORCHESTRATOR_USAGE_*`; la tabla `budgets` permite estrecharlos por proyecto, agente, perfil o categoría y el presupuesto de la Task puede estrecharlos aún más.
 
 ## Arquitectura
 

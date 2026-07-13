@@ -10,6 +10,7 @@ from typing import Any
 from sqlalchemy import Select, func, select
 from sqlalchemy.orm import Session, selectinload
 
+from hermes_orchestrator.config import Settings
 from hermes_orchestrator.models import (
     Approval,
     AuditEvent,
@@ -18,14 +19,27 @@ from hermes_orchestrator.models import (
     TaskComment,
     TaskDependency,
 )
+from hermes_orchestrator.usage_services import (
+    ControlViolation,
+    enforce_dispatch_controls,
+    ingest_run_usage,
+    record_run_outcome,
+)
 
 
 class LifecycleError(Exception):
-    def __init__(self, code: str, detail: str, status_code: int = 409) -> None:
+    def __init__(
+        self,
+        code: str,
+        detail: str,
+        status_code: int = 409,
+        retry_after: int | None = None,
+    ) -> None:
         super().__init__(detail)
         self.code = code
         self.detail = detail
         self.status_code = status_code
+        self.retry_after = retry_after
 
 
 @dataclass(frozen=True)
@@ -163,6 +177,7 @@ def dispatch_task(
     actor_id: str,
     idempotency_key: str,
     payload: dict[str, Any],
+    settings: Settings | None = None,
     now: datetime | None = None,
 ) -> LifecycleResult:
     effective_now = now or utc_now()
@@ -192,6 +207,24 @@ def dispatch_task(
     )
     if active:
         raise LifecycleError("run_already_active", "La tarea ya tiene un run activo")
+
+    try:
+        enforce_dispatch_controls(
+            session,
+            task=task,
+            worker_actor_id=payload["worker_actor_id"],
+            requested_profile_id=payload["requested_profile_id"],
+            actor_id=actor_id,
+            settings=settings or Settings(),
+            now=effective_now,
+        )
+    except ControlViolation as error:
+        raise LifecycleError(
+            error.code,
+            error.detail,
+            error.status_code,
+            error.retry_after,
+        ) from error
 
     attempt = (
         session.scalar(select(func.max(Run.attempt_number)).where(Run.task_id == task.id)) or 0
@@ -251,6 +284,7 @@ def transition_run(
     error_code: str | None = None,
     summary: str | None = None,
     now: datetime | None = None,
+    settings: Settings | None = None,
 ) -> Run:
     effective_now = now or utc_now()
     run = get_run(session, run_id)
@@ -283,6 +317,21 @@ def transition_run(
         aggregate_id=run.id,
         payload={"task_id": str(task.id), "error_code": error_code},
     )
+    if new_status in {"completed", "failed", "timed_out"}:
+        record_run_outcome(
+            session,
+            run,
+            settings=settings or Settings(),
+            actor_id=actor_id,
+            now=effective_now,
+        )
+    if new_status in TERMINAL_RUN_STATUSES:
+        ingest_run_usage(
+            session,
+            run,
+            settings=settings or Settings(),
+            actor_id=actor_id,
+        )
     session.commit()
     return get_run(session, run.id)
 
@@ -331,6 +380,7 @@ def cancel_task(
     idempotency_key: str,
     reason: str,
     now: datetime | None = None,
+    settings: Settings | None = None,
 ) -> LifecycleResult:
     effective_now = now or utc_now()
     task = get_task(session, task_id)
@@ -352,6 +402,12 @@ def cancel_task(
         run.error_code = "cancelled"
         run.summary = reason
         run.finished_at = effective_now
+        ingest_run_usage(
+            session,
+            run,
+            settings=settings or Settings(),
+            actor_id=actor_id,
+        )
     append_audit(
         session,
         actor_id=actor_id,
@@ -373,6 +429,7 @@ def resolve_approval(
     decision: str,
     reason: str,
     now: datetime | None = None,
+    settings: Settings | None = None,
 ) -> LifecycleResult:
     effective_now = now or utc_now()
     run = get_run(session, run_id)
@@ -401,6 +458,12 @@ def resolve_approval(
         run.error_code = "approval_expired"
         run.finished_at = effective_now
         task.status = "failed"
+        ingest_run_usage(
+            session,
+            run,
+            settings=settings or Settings(),
+            actor_id="system:watchdog",
+        )
         append_audit(
             session,
             actor_id="system:watchdog",
@@ -425,6 +488,12 @@ def resolve_approval(
         run.error_code = "approval_rejected"
         run.finished_at = effective_now
         task.status = "failed"
+        ingest_run_usage(
+            session,
+            run,
+            settings=settings or Settings(),
+            actor_id=actor_id,
+        )
     append_audit(
         session,
         actor_id=actor_id,
@@ -438,7 +507,11 @@ def resolve_approval(
 
 
 def expire_due_runs(
-    session: Session, *, actor_id: str = "system:watchdog", now: datetime | None = None
+    session: Session,
+    *,
+    actor_id: str = "system:watchdog",
+    now: datetime | None = None,
+    settings: Settings | None = None,
 ) -> list[uuid.UUID]:
     effective_now = now or utc_now()
     due_runs = list(
@@ -459,6 +532,19 @@ def expire_due_runs(
             event_type="run.timed_out",
             aggregate_type="run",
             aggregate_id=run.id,
+        )
+        record_run_outcome(
+            session,
+            run,
+            settings=settings or Settings(),
+            actor_id=actor_id,
+            now=effective_now,
+        )
+        ingest_run_usage(
+            session,
+            run,
+            settings=settings or Settings(),
+            actor_id=actor_id,
         )
         expired_ids.append(run.id)
     session.commit()

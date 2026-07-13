@@ -23,6 +23,8 @@ class Permission(StrEnum):
     APPROVALS_DECIDE = "approvals:decide"
     FLEET_READ = "fleet:read"
     FLEET_RECONCILE_REQUEST = "fleet:reconcile_request"
+    USAGE_READ = "usage:read"
+    USAGE_CONTROL_RESET = "usage:control_reset"
 
 
 ROLE_PERMISSIONS: dict[str, frozenset[Permission]] = {
@@ -41,6 +43,7 @@ ROLE_PERMISSIONS: dict[str, frozenset[Permission]] = {
             Permission.APPROVALS_DECIDE,
             Permission.FLEET_READ,
             Permission.FLEET_RECONCILE_REQUEST,
+            Permission.USAGE_READ,
         }
     ),
     "operator": frozenset(
@@ -52,6 +55,8 @@ ROLE_PERMISSIONS: dict[str, frozenset[Permission]] = {
             Permission.RUNS_READ,
             Permission.FLEET_READ,
             Permission.FLEET_RECONCILE_REQUEST,
+            Permission.USAGE_READ,
+            Permission.USAGE_CONTROL_RESET,
         }
     ),
     "researcher": frozenset(
@@ -62,6 +67,7 @@ ROLE_PERMISSIONS: dict[str, frozenset[Permission]] = {
             Permission.TASKS_CREATE,
             Permission.TASKS_COMMENT,
             Permission.RUNS_READ,
+            Permission.USAGE_READ,
         }
     ),
     "developer": frozenset(
@@ -72,6 +78,7 @@ ROLE_PERMISSIONS: dict[str, frozenset[Permission]] = {
             Permission.TASKS_CREATE,
             Permission.TASKS_COMMENT,
             Permission.RUNS_READ,
+            Permission.USAGE_READ,
         }
     ),
     "validator": frozenset(
@@ -83,6 +90,7 @@ ROLE_PERMISSIONS: dict[str, frozenset[Permission]] = {
             Permission.RUNS_READ,
             Permission.APPROVALS_DECIDE,
             Permission.FLEET_READ,
+            Permission.USAGE_READ,
         }
     ),
 }

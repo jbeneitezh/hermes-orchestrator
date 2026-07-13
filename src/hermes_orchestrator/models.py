@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import (
@@ -11,6 +12,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    Numeric,
     String,
     Text,
     UniqueConstraint,
@@ -303,3 +305,85 @@ class RunEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
     run: Mapped[Run] = relationship(back_populates="events")
+
+
+class UsageLedger(Base):
+    __tablename__ = "usage_ledger"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("runs.id"), unique=True, index=True)
+    payload_hash: Mapped[str] = mapped_column(String(64))
+    operation_id: Mapped[uuid.UUID] = mapped_column(Uuid, index=True)
+    task_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tasks.id"), index=True)
+    parent_run_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, index=True)
+    project_id: Mapped[str] = mapped_column(String(120), index=True)
+    category: Mapped[str] = mapped_column(String(120), index=True)
+    requesting_agent_id: Mapped[str] = mapped_column(String(160), index=True)
+    executing_agent_id: Mapped[str] = mapped_column(String(160), index=True)
+    requested_profile: Mapped[str] = mapped_column(String(80), index=True)
+    effective_profile: Mapped[str | None] = mapped_column(String(80), index=True)
+    model: Mapped[str | None] = mapped_column(String(120), index=True)
+    provider: Mapped[str | None] = mapped_column(String(80), index=True)
+    reasoning_effort: Mapped[str | None] = mapped_column(String(20))
+    input_tokens: Mapped[int | None] = mapped_column(Integer)
+    output_tokens: Mapped[int | None] = mapped_column(Integer)
+    reasoning_tokens: Mapped[int | None] = mapped_column(Integer)
+    cache_read_tokens: Mapped[int | None] = mapped_column(Integer)
+    cache_write_tokens: Mapped[int | None] = mapped_column(Integer)
+    api_calls: Mapped[int | None] = mapped_column(Integer)
+    estimated_cost: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    actual_cost: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    currency: Mapped[str | None] = mapped_column(String(8))
+    cost_status: Mapped[str] = mapped_column(String(20), default="unknown", index=True)
+    cost_source: Mapped[str | None] = mapped_column(String(120))
+    quota_status: Mapped[str] = mapped_column(String(30), default="available", index=True)
+    quota_reset_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    duration_ms: Mapped[int | None] = mapped_column(Integer)
+    outcome: Mapped[str] = mapped_column(String(40), index=True)
+    retry_number: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class Budget(Base):
+    __tablename__ = "budgets"
+    __table_args__ = (UniqueConstraint("scope_type", "scope_key", name="uq_budget_scope"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    scope_type: Mapped[str] = mapped_column(String(30), index=True)
+    scope_key: Mapped[str] = mapped_column(String(160), index=True)
+    window_seconds: Mapped[int] = mapped_column(Integer, default=86400)
+    soft_token_limit: Mapped[int | None] = mapped_column(Integer)
+    hard_token_limit: Mapped[int | None] = mapped_column(Integer)
+    max_concurrent_runs: Mapped[int | None] = mapped_column(Integer)
+    max_fan_out: Mapped[int | None] = mapped_column(Integer)
+    max_retries: Mapped[int | None] = mapped_column(Integer)
+    circuit_failure_threshold: Mapped[int | None] = mapped_column(Integer)
+    circuit_cooldown_seconds: Mapped[int | None] = mapped_column(Integer)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+
+
+class CircuitBreaker(Base):
+    __tablename__ = "circuit_breakers"
+    __table_args__ = (
+        UniqueConstraint("worker_actor_id", "profile_id", name="uq_circuit_worker_profile"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    worker_actor_id: Mapped[str] = mapped_column(String(160), index=True)
+    profile_id: Mapped[str] = mapped_column(String(80), index=True)
+    state: Mapped[str] = mapped_column(String(20), default="closed", index=True)
+    consecutive_failures: Mapped[int] = mapped_column(Integer, default=0)
+    last_error_code: Mapped[str | None] = mapped_column(String(100))
+    opened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    reset_eligible_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    reset_by_actor_id: Mapped[str | None] = mapped_column(String(160))
+    reset_reason: Mapped[str | None] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )

@@ -21,6 +21,7 @@ from hermes_orchestrator.mcp_server import (
     _identity_from_request,
 )
 from hermes_orchestrator.models import Agent, Base, CommunicationEdge, Run
+from hermes_orchestrator.usage_services import ingest_run_usage
 
 LEADER = "agent:leader"
 DEVELOPER = "agent:developer"
@@ -259,7 +260,7 @@ def test_invalid_input_participant_visibility_comment_usage_and_redaction(mcp_co
     serialized = str({"view": participant_view, "comment": comment, "usage": usage})
     assert participant_view["task"]["id"] == task_id
     assert comment["comment"]["body"] == "Listo para revisar"
-    assert usage["cost_status"] == "included"
+    assert usage["cost_status"] == "ledger"
     assert "worker_run_id" not in serialized
     assert "internal_endpoint" not in serialized
     assert "token" not in serialized.lower()
@@ -396,6 +397,7 @@ def test_usage_summary_aggregates_and_filters_operation(mcp_context) -> None:
             "output_tokens": 20,
             "reasoning_tokens": "unknown",
         }
+        ingest_run_usage(session, run, settings=settings)
         session.commit()
         usage = _execute_tool(
             session,
@@ -405,14 +407,8 @@ def test_usage_summary_aggregates_and_filters_operation(mcp_context) -> None:
             settings,
         )
 
-    assert usage["groups"] == [
-        {
-            "operation_id": created["task"]["operation_id"],
-            "worker_actor_id": DEVELOPER,
-            "profile_id": "spark-low",
-            "runs": 1,
-            "input_tokens": 100,
-            "output_tokens": 20,
-            "reasoning_tokens": 0,
-        }
-    ]
+    assert usage["groups"][0]["key"] == created["task"]["operation_id"]
+    assert usage["groups"][0]["tokens"]["input_tokens"] == 100
+    assert usage["groups"][0]["tokens"]["output_tokens"] == 20
+    assert usage["groups"][0]["tokens"]["reasoning_tokens"] is None
+    assert usage["groups"][0]["unknown_tokens"]["reasoning_tokens"] == 1

@@ -63,6 +63,10 @@ def test_capabilities_publish_only_bootstrap_features(monkeypatch) -> None:
             "fleet_status",
             "fleet_reconcile_request",
             "fleet_allowlisted_runner",
+            "usage_ledger",
+            "budget_dispatch_controls",
+            "quota_status",
+            "circuit_breaker",
         ],
     }
 
@@ -89,6 +93,10 @@ def test_openapi_contains_the_bootstrap_and_catalog_routes(monkeypatch) -> None:
         "/v1/runs/{run_id}/approval",
         "/v1/fleet/status",
         "/v1/fleet/reconcile-requests",
+        "/v1/usage/summary",
+        "/v1/usage/runs/{run_id}",
+        "/v1/usage/control-status",
+        "/v1/usage/circuits/{circuit_id}/reset",
     }
 
 

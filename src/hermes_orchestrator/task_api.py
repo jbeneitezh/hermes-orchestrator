@@ -40,9 +40,15 @@ IdempotencyKey = Annotated[str, Header(alias="Idempotency-Key", min_length=8, ma
 
 
 def raise_http(error: LifecycleError) -> NoReturn:
+    detail: dict[str, object] = {"code": error.code, "detail": error.detail}
+    headers = None
+    if error.retry_after is not None:
+        detail["retry_after"] = error.retry_after
+        headers = {"Retry-After": str(error.retry_after)}
     raise HTTPException(
         status_code=error.status_code,
-        detail={"code": error.code, "detail": error.detail},
+        detail=detail,
+        headers=headers,
     ) from error
 
 
@@ -129,6 +135,7 @@ def build_task_router(settings: Settings) -> APIRouter:
                 actor_id=actor_id,
                 idempotency_key=idempotency_key,
                 payload=body.model_dump(mode="python"),
+                settings=settings,
             )
         except LifecycleError as error:
             raise_http(error)
@@ -183,6 +190,7 @@ def build_task_router(settings: Settings) -> APIRouter:
                 actor_id=actor_id,
                 idempotency_key=idempotency_key,
                 reason=body.reason,
+                settings=settings,
             )
         except LifecycleError as error:
             raise_http(error)
@@ -240,6 +248,7 @@ def build_task_router(settings: Settings) -> APIRouter:
                 idempotency_key=idempotency_key,
                 decision=body.decision,
                 reason=body.reason,
+                settings=settings,
             )
         except LifecycleError as error:
             raise_http(error)
