@@ -15,6 +15,7 @@ class Permission(StrEnum):
     AGENTS_REQUEST = "agents:request"
     AGENTS_REQUEST_DECIDE = "agents:request_decide"
     AGENTS_REQUEST_RETIRE = "agents:request_retire"
+    AGENTS_PROVISION = "agents:provision"
     PROFILES_READ = "profiles:read"
     TASKS_READ = "tasks:read"
     TASKS_CREATE = "tasks:create"
@@ -63,6 +64,7 @@ ROLE_PERMISSIONS: dict[str, frozenset[Permission]] = {
             Permission.AGENTS_READ,
             Permission.AGENTS_REQUEST_DECIDE,
             Permission.AGENTS_REQUEST_RETIRE,
+            Permission.AGENTS_PROVISION,
             Permission.PROFILES_READ,
             Permission.TASKS_READ,
             Permission.TASKS_CANCEL,

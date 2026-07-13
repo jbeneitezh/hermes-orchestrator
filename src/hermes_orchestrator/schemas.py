@@ -108,6 +108,23 @@ class AgentRequestRetire(BaseModel):
     reason: str = Field(min_length=1, max_length=2000)
 
 
+class AgentProvisionCommand(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(min_length=1, max_length=2000)
+
+
+class AgentProvisionResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: uuid.UUID
+    status: Literal["applied", "no_change", "rolled_back"]
+    service_name: str
+    config_digest: str
+    health: str
+    replayed: bool = False
+
+
 class AgentInstanceResponse(BaseModel):
     model_config = ConfigDict(extra="forbid", from_attributes=True)
 

@@ -27,6 +27,8 @@ La API queda disponible en `http://localhost:8080`:
 - `GET /v1/agents/requests/{id}`: detalle y estado auditable de la solicitud.
 - `POST /v1/agents/requests/{id}/decide`: aprobación o rechazo independiente e idempotente.
 - `POST /v1/agents/requests/{id}/retire`: retirada lógica de una solicitud aplicada o fallida.
+- `POST /v1/agents/requests/{id}/provision`: materializa una solicitud aprobada mediante plantilla allowlisted.
+- `POST /v1/agents/requests/{id}/rollback`: detiene y retira del Compose managed sin borrar datos.
 - `GET /v1/execution-profiles`: perfiles efectivos permitidos.
 - `POST /v1/tasks`, `GET /v1/tasks/{id}`: objetivo durable separado de sus intentos.
 - `POST /v1/tasks/{id}/dispatch|comments|cancel`: comandos idempotentes del ciclo.

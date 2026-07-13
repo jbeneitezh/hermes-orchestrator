@@ -41,6 +41,8 @@ class Settings(BaseSettings):
         "/host_mnt/d/Personal/hermes-tradix/tradix",
         "/host_mnt/d/Personal/hermes-tradix/hermes-agents-compose",
     ]
+    agent_provisioner_url: str = "http://agent-provisioner:8091"
+    agent_provisioner_token: str = ""
     usage_project_id: str = "tradix"
     usage_window_seconds: int = 86400
     usage_soft_token_limit: int = 5_000_000
