@@ -168,7 +168,12 @@ class LeaseKeeper:
 def build_run_input(task: Task) -> str:
     criteria = "\n".join(f"- {item}" for item in task.acceptance_criteria) or "- No definidos"
     references = "\n".join(f"- {item}" for item in task.references) or "- Ninguna"
+    parent_task_id = str(task.parent_task_id) if task.parent_task_id else "Ninguna"
     return (
+        "Contexto durable:\n"
+        f"- task_id: {task.id}\n"
+        f"- operation_id: {task.operation_id}\n"
+        f"- parent_task_id: {parent_task_id}\n\n"
         f"Objetivo:\n{task.objective}\n\n"
         f"Criterios de aceptación:\n{criteria}\n\n"
         f"Referencias:\n{references}"

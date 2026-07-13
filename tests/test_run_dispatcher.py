@@ -21,7 +21,7 @@ from hermes_orchestrator.models import (
     Task,
     UsageLedger,
 )
-from hermes_orchestrator.run_dispatcher import WORKER_SECRET_PREFIX, RunDispatcher
+from hermes_orchestrator.run_dispatcher import WORKER_SECRET_PREFIX, RunDispatcher, build_run_input
 from tests.fakes.hermes_server import FakeHermesServer, FakeHermesState
 
 SECRET_REF = f"{WORKER_SECRET_PREFIX}developer"
@@ -119,6 +119,20 @@ def dispatcher(session_factory: sessionmaker[Session], server: FakeHermesServer)
         instance.internal_endpoint = server.url
         session.commit()
     return RunDispatcher(session_factory, settings(), adapter_factory=adapter_factory)
+
+
+def test_build_run_input_includes_durable_task_context(session_factory) -> None:
+    run = create_run(session_factory)
+    with session_factory() as session:
+        task = session.get(Task, run.task_id)
+        assert task is not None
+        rendered = build_run_input(task)
+
+    assert f"- task_id: {task.id}" in rendered
+    assert f"- operation_id: {task.operation_id}" in rendered
+    assert "- parent_task_id: Ninguna" in rendered
+    assert "Objetivo:\nEntregar una respuesta verificable" in rendered
+    assert "- docs/agents/index.md" in rendered
 
 
 def test_completed_closes_run_events_and_usage(session_factory) -> None:
