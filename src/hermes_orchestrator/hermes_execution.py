@@ -282,7 +282,10 @@ def finalize_run_from_worker_state(
         worker_state=worker_state,
     )
     run.usage_snapshot = worker_state.usage
+    agent_handoff = run.error_details.get("agent_handoff")
     run.error_details = worker_state.error
+    if isinstance(agent_handoff, dict):
+        run.error_details = run.error_details | {"agent_handoff": agent_handoff}
     run.effective_profile_id = effective_profile_id
     _persist_terminal_if_missing(
         session,

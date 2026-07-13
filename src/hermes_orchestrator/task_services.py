@@ -48,6 +48,16 @@ class LifecycleResult:
     replayed: bool = False
 
 
+@dataclass(frozen=True)
+class TaskHandoffResult:
+    task: Task
+    run: Run
+    comment: TaskComment
+    approval: Approval | None
+    handoff: dict[str, Any]
+    replayed: bool = False
+
+
 ACTIVE_RUN_STATUSES = {"dispatching", "running", "awaiting_approval"}
 TERMINAL_RUN_STATUSES = {"completed", "failed", "cancelled", "timed_out"}
 RUN_TRANSITIONS: dict[str, set[str]] = {
@@ -427,15 +437,28 @@ def transition_run(
         run.finished_at = effective_now
         _clear_run_lease(run)
     task = get_task(session, run.task_id)
-    task.status = {
-        "dispatching": "dispatched",
-        "running": "in_progress",
-        "awaiting_approval": "awaiting_approval",
-        "completed": "completed",
-        "failed": "failed",
-        "cancelled": "cancelled",
-        "timed_out": "timed_out",
-    }[new_status]
+    handoff = run.error_details.get("agent_handoff")
+    if new_status == "completed" and isinstance(handoff, dict):
+        task.status = (
+            "blocked"
+            if handoff.get("outcome") == "blocked"
+            else "awaiting_approval"
+            if any(
+                approval.action == "completion" and approval.status == "pending"
+                for approval in run.approvals
+            )
+            else "completed"
+        )
+    else:
+        task.status = {
+            "dispatching": "dispatched",
+            "running": "in_progress",
+            "awaiting_approval": "awaiting_approval",
+            "completed": "completed",
+            "failed": "failed",
+            "cancelled": "cancelled",
+            "timed_out": "timed_out",
+        }[new_status]
     append_audit(
         session,
         actor_id=actor_id,
@@ -461,6 +484,127 @@ def transition_run(
         )
     session.commit()
     return get_run(session, run.id)
+
+
+def handoff_task(
+    session: Session,
+    *,
+    task_id: uuid.UUID,
+    actor_id: str,
+    idempotency_key: str,
+    handoff: dict[str, Any],
+    approval_ttl_seconds: int = 86400,
+    now: datetime | None = None,
+) -> TaskHandoffResult:
+    """Registra el resultado tipado del worker sin cerrar prematuramente su Run."""
+
+    existing = session.scalar(
+        select(TaskComment).where(TaskComment.idempotency_key == idempotency_key)
+    )
+    if existing is not None:
+        try:
+            persisted = json.loads(existing.body)
+            persisted_input = {key: value for key, value in persisted.items() if key != "run_id"}
+        except (json.JSONDecodeError, AttributeError):
+            persisted = {}
+            persisted_input = {}
+        if (
+            existing.task_id != task_id
+            or existing.actor_id != actor_id
+            or persisted_input != handoff
+        ):
+            raise LifecycleError("idempotency_conflict", "La clave ya se usó con otro handoff")
+        task = get_task(session, task_id)
+        run_id = persisted.get("run_id")
+        run = get_run(session, uuid.UUID(str(run_id)))
+        existing_approval = session.scalar(
+            select(Approval)
+            .where(Approval.run_id == run.id, Approval.action == "completion")
+            .order_by(Approval.created_at.desc())
+        )
+        stored_handoff = run.error_details.get("agent_handoff")
+        if not isinstance(stored_handoff, dict):
+            stored_handoff = persisted | {"comment_id": str(existing.id)}
+        return TaskHandoffResult(
+            task, run, existing, existing_approval, stored_handoff, replayed=True
+        )
+
+    task = get_task(session, task_id)
+    active_run = session.scalar(
+        select(Run)
+        .where(Run.task_id == task.id, Run.status == "running")
+        .order_by(Run.attempt_number.desc())
+    )
+    if active_run is None:
+        raise LifecycleError("active_run_not_found", "La tarea no tiene un Run activo", 409)
+    if active_run.worker_actor_id != actor_id:
+        raise LifecycleError(
+            "worker_mismatch", "Solo el worker activo puede entregar la tarea", 403
+        )
+    outcome = handoff.get("outcome")
+    if outcome not in {"blocked", "completed"}:
+        raise LifecycleError("invalid_handoff", "El resultado del handoff no es válido")
+
+    handoff = handoff | {"run_id": str(active_run.id)}
+    serialized = json.dumps(handoff, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    comment = TaskComment(
+        task_id=task.id,
+        actor_id=actor_id,
+        body=serialized,
+        idempotency_key=idempotency_key,
+    )
+    session.add(comment)
+    session.flush()
+    persisted_handoff = handoff | {"comment_id": str(comment.id)}
+    active_run.error_details = active_run.error_details | {"agent_handoff": persisted_handoff}
+
+    completion_approval: Approval | None = None
+    if outcome == "blocked":
+        task.status = "blocked"
+        event_type = "task.blocked"
+    elif task.independent_review:
+        if task.reviewer_actor_id == actor_id:
+            raise LifecycleError("self_review_denied", "El worker no puede revisar su entrega", 403)
+        effective_now = now or utc_now()
+        completion_approval = Approval(
+            run_id=active_run.id,
+            action="completion",
+            context_snapshot={
+                "task_id": str(task.id),
+                "handoff_comment_id": str(comment.id),
+                "outcome": outcome,
+            },
+            requested_by_actor_id=actor_id,
+            expires_at=effective_now + timedelta(seconds=approval_ttl_seconds),
+        )
+        session.add(completion_approval)
+        task.status = "awaiting_approval"
+        event_type = "task.completion_requested"
+    else:
+        task.status = "completed"
+        event_type = "task.completed_handoff"
+
+    append_audit(
+        session,
+        actor_id=actor_id,
+        event_type=event_type,
+        aggregate_type="task",
+        aggregate_id=task.id,
+        payload={
+            "run_id": str(active_run.id),
+            "comment_id": str(comment.id),
+            "outcome": outcome,
+            "block_type": handoff.get("block_type"),
+        },
+    )
+    session.commit()
+    return TaskHandoffResult(
+        get_task(session, task.id),
+        get_run(session, active_run.id),
+        comment,
+        completion_approval,
+        persisted_handoff,
+    )
 
 
 def add_comment(
@@ -580,19 +724,24 @@ def resolve_approval(
         raise LifecycleError("self_review_denied", "El ejecutor no puede aprobar su run", 403)
     if task.independent_review and actor_id != task.reviewer_actor_id:
         raise LifecycleError("reviewer_mismatch", "Solo el reviewer asignado puede decidir", 403)
+    is_completion_approval = approval.action == "completion"
+    if is_completion_approval and run.status != "completed":
+        raise LifecycleError("handoff_not_terminal", "El Run todavía no ha terminado")
     if ensure_aware(approval.expires_at) <= effective_now:
         approval.status = "expired"
-        run.status = "failed"
-        run.error_code = "approval_expired"
-        run.finished_at = effective_now
-        _clear_run_lease(run)
+        if not is_completion_approval:
+            run.status = "failed"
+            run.error_code = "approval_expired"
+            run.finished_at = effective_now
+            _clear_run_lease(run)
         task.status = "failed"
-        ingest_run_usage(
-            session,
-            run,
-            settings=settings or Settings(),
-            actor_id="system:watchdog",
-        )
+        if not is_completion_approval:
+            ingest_run_usage(
+                session,
+                run,
+                settings=settings or Settings(),
+                actor_id="system:watchdog",
+            )
         append_audit(
             session,
             actor_id="system:watchdog",
@@ -609,7 +758,11 @@ def resolve_approval(
     approval.decision_reason = reason
     approval.decision_idempotency_key = idempotency_key
     approval.decided_at = effective_now
-    if decision == "approved":
+    if is_completion_approval and decision == "approved":
+        task.status = "completed"
+    elif is_completion_approval:
+        task.status = "failed"
+    elif decision == "approved":
         run.status = "dispatching"
         run.next_attempt_at = effective_now
         task.status = "dispatched"

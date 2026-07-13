@@ -314,11 +314,14 @@ class RunDispatcher:
             return DispatchResult(run_id, "retry_scheduled", self._status(run_id))
         with self.session_factory() as session:
             run = get_run(session, run_id)
+            agent_handoff = run.error_details.get("agent_handoff")
             run.error_details = {
                 "code": error.code,
                 "message": error.detail if isinstance(error, DispatchError) else error.message,
                 "retryable": retryable,
             }
+            if isinstance(agent_handoff, dict):
+                run.error_details = run.error_details | {"agent_handoff": agent_handoff}
             session.commit()
             if run.status in {"dispatching", "running"}:
                 run = transition_run(

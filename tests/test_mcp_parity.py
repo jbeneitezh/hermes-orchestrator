@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Iterator
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -20,7 +21,22 @@ from hermes_orchestrator.mcp_server import (
     _execute_tool,
     _identity_from_request,
 )
-from hermes_orchestrator.models import Agent, Base, CommunicationEdge, Run
+from hermes_orchestrator.models import (
+    Agent,
+    AgentRequestRecord,
+    AuditEvent,
+    Base,
+    CommunicationEdge,
+    Run,
+    Task,
+    TaskComment,
+)
+from hermes_orchestrator.task_services import (
+    LifecycleError,
+    handoff_task,
+    resolve_approval,
+    transition_run,
+)
 from hermes_orchestrator.usage_services import ingest_run_usage
 from tests.auth_helpers import auth_headers, seed_active_auth_agents, token_settings
 
@@ -142,6 +158,43 @@ def mcp_call(
     return response.json()["result"]
 
 
+def start_developer_run(
+    session: Session,
+    agents: dict[str, Agent],
+    settings: Settings,
+    key: str,
+    *,
+    independent_review: bool = False,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    arguments = task_arguments(f"{key}-task")
+    if independent_review:
+        arguments |= {
+            "reviewer_actor_id": RESEARCHER,
+            "independent_review": True,
+        }
+    created = _execute_tool(session, identity(agents["leader"]), "task_create", arguments, settings)
+    dispatched = _execute_tool(
+        session,
+        identity(agents["leader"]),
+        "task_dispatch",
+        {
+            "task_id": created["task"]["id"],
+            "worker_agent_id": str(agents["developer"].id),
+            "requested_profile_id": "spark-low",
+            "idempotency_key": f"{key}-dispatch",
+        },
+        settings,
+    )
+    transition_run(
+        session,
+        run_id=uuid.UUID(dispatched["run"]["id"]),
+        new_status="running",
+        actor_id="system:test",
+        settings=settings,
+    )
+    return created, dispatched
+
+
 def test_streamable_http_introspection_filters_tools(mcp_context) -> None:
     client, _, agents, _ = mcp_context
     initialized = mcp_post(
@@ -170,7 +223,454 @@ def test_streamable_http_introspection_filters_tools(mcp_context) -> None:
         "task_create",
         "task_get",
         "task_comment",
+        "task_block",
+        "task_complete",
     }
+
+
+def test_agent_request_is_idempotent_and_shares_the_rest_domain(mcp_context) -> None:
+    _, factory, agents, settings = mcp_context
+    arguments = {
+        "idempotency_key": "mcp-agent-request-01",
+        "slug": "data-steward-01",
+        "role": "data_steward",
+        "description": "Valida calidad del dataset",
+        "policy_set": {"name": "data-readonly"},
+        "capabilities": ["dataset_read"],
+        "secret_refs": ["secret://codex/broker-client"],
+    }
+    with factory() as session:
+        leader = identity(agents["leader"])
+        first = _execute_tool(session, leader, "agent_request", arguments, settings)
+        replay = _execute_tool(session, leader, "agent_request", arguments, settings)
+        requests = list(session.scalars(select(AgentRequestRecord)))
+        audits = list(
+            session.scalars(select(AuditEvent).where(AuditEvent.event_type == "agent.requested"))
+        )
+
+    assert first["request"]["id"] == replay["request"]["id"]
+    assert replay["replayed"] is True
+    assert len(requests) == 1
+    assert len(audits) == 1
+
+    with factory() as session:
+        with pytest.raises(McpDomainError) as conflict:
+            _execute_tool(
+                session,
+                identity(agents["leader"]),
+                "agent_request",
+                arguments | {"description": "Otra capacidad"},
+                settings,
+            )
+        with pytest.raises(McpDomainError) as unknown:
+            _execute_tool(session, identity(agents["leader"]), "unknown", {}, settings)
+        with pytest.raises(McpDomainError, match="X-Agent-Id no es válido"):
+            _identity_from_request(session, None, settings)
+
+    assert conflict.value.code == "idempotency_conflict"
+    assert unknown.value.code == "permission_denied"
+
+
+def test_task_block_records_typed_handoff_and_survives_worker_finalization(mcp_context) -> None:
+    _, factory, agents, settings = mcp_context
+    with factory() as session:
+        created, dispatched = start_developer_run(session, agents, settings, "mcp-block-0001")
+        blocked = _execute_tool(
+            session,
+            identity(agents["developer"]),
+            "task_block",
+            {
+                "task_id": created["task"]["id"],
+                "idempotency_key": "mcp-block-handoff-0001",
+                "block_type": "clarification",
+                "summary": "El criterio de cálculo es ambiguo",
+                "needed_action": "Confirmar si el spread se aplica antes del redondeo",
+                "references": ["docs/architecture-proposal.md"],
+            },
+            settings,
+        )
+        replay = _execute_tool(
+            session,
+            identity(agents["developer"]),
+            "task_block",
+            {
+                "task_id": created["task"]["id"],
+                "idempotency_key": "mcp-block-handoff-0001",
+                "block_type": "clarification",
+                "summary": "El criterio de cálculo es ambiguo",
+                "needed_action": "Confirmar si el spread se aplica antes del redondeo",
+                "references": ["docs/architecture-proposal.md"],
+            },
+            settings,
+        )
+        transition_run(
+            session,
+            run_id=uuid.UUID(dispatched["run"]["id"]),
+            new_status="completed",
+            actor_id="system:test",
+            summary="Worker finalizado",
+            settings=settings,
+        )
+        persisted = _execute_tool(
+            session,
+            identity(agents["leader"]),
+            "task_get",
+            {"task_id": created["task"]["id"]},
+            settings,
+        )
+
+    assert blocked["task"]["status"] == "blocked"
+    assert blocked["handoff"]["block_type"] == "clarification"
+    assert blocked["handoff"]["needed_action"].startswith("Confirmar")
+    assert replay["replayed"] is True
+    assert persisted["task"]["status"] == "blocked"
+
+
+def test_task_complete_creates_terminal_handoff_with_rest_parity(mcp_context) -> None:
+    client, factory, agents, settings = mcp_context
+    with factory() as session:
+        created, dispatched = start_developer_run(session, agents, settings, "mcp-complete-0001")
+        completed = _execute_tool(
+            session,
+            identity(agents["developer"]),
+            "task_complete",
+            {
+                "task_id": created["task"]["id"],
+                "idempotency_key": "mcp-complete-handoff-01",
+                "summary": "Contrato MCP implementado y verificado",
+                "outputs": ["rama feat/mcp-lifecycle"],
+                "evidence": ["pytest tests/test_mcp_parity.py"],
+            },
+            settings,
+        )
+        transition_run(
+            session,
+            run_id=uuid.UUID(dispatched["run"]["id"]),
+            new_status="completed",
+            actor_id="system:test",
+            summary="Worker finalizado",
+            settings=settings,
+        )
+
+    rest = client.get(f"/v1/tasks/{created['task']['id']}", headers=auth_headers(LEADER)).json()
+    assert completed["task"]["status"] == "completed"
+    assert completed["approval"] is None
+    assert completed["handoff"]["outcome"] == "completed"
+    assert rest["status"] == "completed"
+    assert rest["comments"][0]["id"] == completed["handoff"]["comment_id"]
+
+
+def test_independent_completion_cannot_be_approved_by_its_worker(mcp_context) -> None:
+    _, factory, agents, settings = mcp_context
+    with factory() as session:
+        created, dispatched = start_developer_run(
+            session,
+            agents,
+            settings,
+            "mcp-review-0001",
+            independent_review=True,
+        )
+        completed = _execute_tool(
+            session,
+            identity(agents["developer"]),
+            "task_complete",
+            {
+                "task_id": created["task"]["id"],
+                "idempotency_key": "mcp-review-handoff-0001",
+                "summary": "Cambio listo para revisión independiente",
+                "outputs": ["PR #123"],
+                "evidence": ["suite verde"],
+            },
+            settings,
+        )
+        transition_run(
+            session,
+            run_id=uuid.UUID(dispatched["run"]["id"]),
+            new_status="completed",
+            actor_id="system:test",
+            settings=settings,
+        )
+        with pytest.raises(LifecycleError) as captured:
+            resolve_approval(
+                session,
+                run_id=uuid.UUID(dispatched["run"]["id"]),
+                actor_id=DEVELOPER,
+                idempotency_key="mcp-self-approval-denied",
+                decision="approved",
+                reason="Intento de autoaprobación",
+                settings=settings,
+            )
+
+    assert completed["task"]["status"] == "awaiting_approval"
+    assert completed["approval"]["status"] == "pending"
+    assert captured.value.code == "self_review_denied"
+
+
+@pytest.mark.parametrize(
+    ("decision", "expected_status"), [("approved", "completed"), ("rejected", "failed")]
+)
+def test_independent_completion_is_decided_by_the_assigned_reviewer(
+    mcp_context, decision: str, expected_status: str
+) -> None:
+    _, factory, agents, settings = mcp_context
+    suffix = "approve" if decision == "approved" else "reject"
+    with factory() as session:
+        created, dispatched = start_developer_run(
+            session,
+            agents,
+            settings,
+            f"mcp-review-{suffix}",
+            independent_review=True,
+        )
+        _execute_tool(
+            session,
+            identity(agents["developer"]),
+            "task_complete",
+            {
+                "task_id": created["task"]["id"],
+                "idempotency_key": f"mcp-review-{suffix}-handoff",
+                "summary": "Entrega pendiente de decisión",
+                "outputs": ["PR verificable"],
+                "evidence": ["suite focalizada"],
+            },
+            settings,
+        )
+        if decision == "approved":
+            with pytest.raises(LifecycleError) as early:
+                resolve_approval(
+                    session,
+                    run_id=uuid.UUID(dispatched["run"]["id"]),
+                    actor_id=RESEARCHER,
+                    idempotency_key="review-too-early-01",
+                    decision="approved",
+                    reason="El Run sigue activo",
+                    settings=settings,
+                )
+            assert early.value.code == "handoff_not_terminal"
+        transition_run(
+            session,
+            run_id=uuid.UUID(dispatched["run"]["id"]),
+            new_status="completed",
+            actor_id="system:test",
+            settings=settings,
+        )
+        resolved = resolve_approval(
+            session,
+            run_id=uuid.UUID(dispatched["run"]["id"]),
+            actor_id=RESEARCHER,
+            idempotency_key=f"review-{suffix}-decision",
+            decision=decision,
+            reason="Decisión independiente",
+            settings=settings,
+        )
+        replay = resolve_approval(
+            session,
+            run_id=uuid.UUID(dispatched["run"]["id"]),
+            actor_id=RESEARCHER,
+            idempotency_key=f"review-{suffix}-decision",
+            decision=decision,
+            reason="Decisión independiente",
+            settings=settings,
+        )
+        with pytest.raises(LifecycleError) as collision:
+            resolve_approval(
+                session,
+                run_id=uuid.UUID(dispatched["run"]["id"]),
+                actor_id=RESEARCHER,
+                idempotency_key=f"review-{suffix}-other-decision",
+                decision=decision,
+                reason="Decisión independiente",
+                settings=settings,
+            )
+        persisted = _execute_tool(
+            session,
+            identity(agents["leader"]),
+            "task_get",
+            {"task_id": created["task"]["id"]},
+            settings,
+        )
+
+    assert resolved.replayed is False
+    assert replay.replayed is True
+    assert collision.value.code == "idempotency_conflict"
+    assert persisted["task"]["status"] == expected_status
+
+
+def test_handoff_domain_rejects_invalid_state_actor_payload_and_key_reuse(mcp_context) -> None:
+    _, factory, agents, settings = mcp_context
+    with factory() as session:
+        leader = identity(agents["leader"])
+        developer = identity(agents["developer"])
+        pending = _execute_tool(
+            session, leader, "task_create", task_arguments("mcp-pending-handoff-01"), settings
+        )
+        with pytest.raises(LifecycleError) as inactive:
+            handoff_task(
+                session,
+                task_id=uuid.UUID(pending["task"]["id"]),
+                actor_id=DEVELOPER,
+                idempotency_key="inactive-handoff-01",
+                handoff={"type": "task_handoff", "outcome": "completed"},
+            )
+
+        created, dispatched = start_developer_run(
+            session, agents, settings, "mcp-handoff-boundaries"
+        )
+        with pytest.raises(LifecycleError) as no_approval:
+            resolve_approval(
+                session,
+                run_id=uuid.UUID(dispatched["run"]["id"]),
+                actor_id=RESEARCHER,
+                idempotency_key="missing-approval-decision",
+                decision="approved",
+                reason="No existe approval",
+                settings=settings,
+            )
+        with pytest.raises(LifecycleError) as wrong_worker:
+            handoff_task(
+                session,
+                task_id=uuid.UUID(created["task"]["id"]),
+                actor_id=leader.actor_id,
+                idempotency_key="wrong-worker-handoff",
+                handoff={"type": "task_handoff", "outcome": "completed"},
+            )
+        with pytest.raises(LifecycleError) as invalid:
+            handoff_task(
+                session,
+                task_id=uuid.UUID(created["task"]["id"]),
+                actor_id=developer.actor_id,
+                idempotency_key="invalid-outcome-handoff",
+                handoff={"type": "task_handoff", "outcome": "unknown"},
+            )
+        task_record = session.get(Task, uuid.UUID(created["task"]["id"]))
+        assert task_record is not None
+        task_record.independent_review = True
+        task_record.reviewer_actor_id = DEVELOPER
+        session.commit()
+        with pytest.raises(LifecycleError) as self_review:
+            handoff_task(
+                session,
+                task_id=task_record.id,
+                actor_id=developer.actor_id,
+                idempotency_key="self-review-handoff",
+                handoff={"type": "task_handoff", "outcome": "completed"},
+            )
+        session.rollback()
+        session.add(
+            TaskComment(
+                task_id=uuid.UUID(created["task"]["id"]),
+                actor_id=developer.actor_id,
+                body="no-es-json",
+                idempotency_key="malformed-handoff-comment",
+            )
+        )
+        session.commit()
+        with pytest.raises(LifecycleError) as malformed:
+            handoff_task(
+                session,
+                task_id=uuid.UUID(created["task"]["id"]),
+                actor_id=developer.actor_id,
+                idempotency_key="malformed-handoff-comment",
+                handoff={"type": "task_handoff", "outcome": "completed"},
+            )
+
+        block_arguments = {
+            "task_id": created["task"]["id"],
+            "idempotency_key": "boundary-block-handoff",
+            "block_type": "dependency",
+            "summary": "Falta una entrada",
+            "needed_action": "Entregar el contrato",
+        }
+        _execute_tool(session, developer, "task_block", block_arguments, settings)
+        with pytest.raises(LifecycleError) as collision:
+            handoff_task(
+                session,
+                task_id=uuid.UUID(created["task"]["id"]),
+                actor_id=developer.actor_id,
+                idempotency_key="boundary-block-handoff",
+                handoff={
+                    "type": "task_handoff",
+                    "outcome": "blocked",
+                    "block_type": "dependency",
+                    "summary": "Otro motivo",
+                    "needed_action": "Entregar el contrato",
+                    "references": [],
+                },
+            )
+        run = session.get(Run, uuid.UUID(dispatched["run"]["id"]))
+        assert run is not None
+        run.error_details = {}
+        session.commit()
+        replay = _execute_tool(session, developer, "task_block", block_arguments, settings)
+
+    assert inactive.value.code == "active_run_not_found"
+    assert no_approval.value.code == "approval_not_found"
+    assert wrong_worker.value.code == "worker_mismatch"
+    assert invalid.value.code == "invalid_handoff"
+    assert self_review.value.code == "self_review_denied"
+    assert malformed.value.code == "idempotency_conflict"
+    assert collision.value.code == "idempotency_conflict"
+    assert replay["replayed"] is True
+    assert replay["handoff"]["comment_id"]
+
+
+def test_completion_approval_expires_without_rewriting_the_finished_run(mcp_context) -> None:
+    _, factory, agents, settings = mcp_context
+    now = datetime.now(UTC)
+    with factory() as session:
+        created, dispatched = start_developer_run(
+            session,
+            agents,
+            settings,
+            "mcp-review-expiry",
+            independent_review=True,
+        )
+        handoff_task(
+            session,
+            task_id=uuid.UUID(created["task"]["id"]),
+            actor_id=DEVELOPER,
+            idempotency_key="mcp-review-expiry-handoff",
+            handoff={
+                "type": "task_handoff",
+                "outcome": "completed",
+                "summary": "Entrega sujeta a caducidad",
+                "outputs": ["PR verificable"],
+                "evidence": [],
+            },
+            approval_ttl_seconds=1,
+            now=now,
+        )
+        transition_run(
+            session,
+            run_id=uuid.UUID(dispatched["run"]["id"]),
+            new_status="completed",
+            actor_id="system:test",
+            settings=settings,
+        )
+        with pytest.raises(LifecycleError) as expired:
+            resolve_approval(
+                session,
+                run_id=uuid.UUID(dispatched["run"]["id"]),
+                actor_id=RESEARCHER,
+                idempotency_key="mcp-review-expiry-decision",
+                decision="approved",
+                reason="Decisión tardía",
+                now=now + timedelta(seconds=2),
+                settings=settings,
+            )
+        run = session.get(Run, uuid.UUID(dispatched["run"]["id"]))
+        assert run is not None
+        task = _execute_tool(
+            session,
+            identity(agents["leader"]),
+            "task_get",
+            {"task_id": created["task"]["id"]},
+            settings,
+        )
+
+    assert expired.value.code == "approval_expired"
+    assert run.status == "completed"
+    assert task["task"]["status"] == "failed"
 
 
 def test_allowed_dispatch_and_rest_mcp_parity(mcp_context) -> None:
@@ -370,9 +870,37 @@ def test_unrelated_task_is_hidden_and_invalid_create_is_normalized(mcp_context) 
                 },
                 settings,
             )
+        with pytest.raises(McpDomainError, match="Tarea no encontrada"):
+            _execute_tool(
+                session,
+                researcher,
+                "task_block",
+                {
+                    "task_id": created["task"]["id"],
+                    "idempotency_key": "hidden-block-0001",
+                    "block_type": "access",
+                    "summary": "No debería poder operar esta tarea",
+                    "needed_action": "No aplica",
+                },
+                settings,
+            )
         with pytest.raises(McpDomainError, match="Argumentos no válidos"):
             _execute_tool(
                 session, leader, "task_create", {"idempotency_key": "invalid-01"}, settings
+            )
+        with pytest.raises(McpDomainError, match="Argumentos no válidos"):
+            _execute_tool(
+                session,
+                identity(agents["developer"]),
+                "task_block",
+                {
+                    "task_id": created["task"]["id"],
+                    "idempotency_key": "invalid-block-01",
+                    "block_type": "inventado",
+                    "summary": "Tipo fuera de contrato",
+                    "needed_action": "Corregir",
+                },
+                settings,
             )
 
 
