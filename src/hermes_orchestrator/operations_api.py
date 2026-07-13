@@ -12,7 +12,9 @@ from hermes_orchestrator.fleet_runner import FleetRunner
 from hermes_orchestrator.operations_services import (
     OperationsReadError,
     approvals_view,
+    autonomy_view,
     fleet_view,
+    provisioning_view,
     quota_view,
     task_view,
     timeline_view,
@@ -104,6 +106,24 @@ def build_operations_router(settings: Settings, runner: FleetRunner) -> APIRoute
         operation_id: uuid.UUID | None = None,
     ) -> dict[str, object]:
         return usage_view(session, group_by=group_by, operation_id=operation_id)
+
+    @router.get("/v1/operations/autonomy")
+    def operations_autonomy(
+        session: SessionDependency,
+        _: Annotated[str, Depends(require(Permission.OPERATIONS_READ))],
+        operation_id: uuid.UUID | None = None,
+        limit: Annotated[int, Query(ge=1, le=200)] = 100,
+    ) -> dict[str, object]:
+        return autonomy_view(session, operation_id=operation_id, limit=limit)
+
+    @router.get("/v1/operations/provisioning")
+    def operations_provisioning(
+        session: SessionDependency,
+        _: Annotated[str, Depends(require(Permission.OPERATIONS_READ))],
+        request_status: Annotated[str | None, Query(alias="status")] = None,
+        limit: Annotated[int, Query(ge=1, le=200)] = 100,
+    ) -> dict[str, object]:
+        return provisioning_view(session, status=request_status, limit=limit)
 
     @router.get("/v1/operations/approvals")
     def operations_approvals(

@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from hermes_orchestrator.config import Settings
 from hermes_orchestrator.main import create_app
 from hermes_orchestrator.models import (
+    AgentRequestRecord,
     Approval,
     AuditEvent,
     Base,
@@ -20,6 +21,7 @@ from hermes_orchestrator.models import (
     RunEvent,
     Task,
     UsageLedger,
+    WorkflowContinuation,
 )
 from hermes_orchestrator.operations_watchdog import (
     PublicOperationsApiReader,
@@ -182,7 +184,124 @@ def test_filters_rollups_fleet_and_dashboard_use_six_public_routes(tmp_path: Pat
         assert usage.json()["groups"][0]["tokens"]["input_tokens"] == 120
         assert dashboard.status_code == 200
         assert "Mesa de <em>operaciones</em>" in dashboard.text
-        assert dashboard.text.count("/v1/operations/") >= 6
+        assert dashboard.text.count("/v1/operations/") >= 8
+
+
+def test_autonomy_projection_covers_six_operational_states(tmp_path: Path) -> None:
+    with operations_context(tmp_path) as (client, factory, _):
+        _, _, queued_run_id = seed_operation(factory, task_status="pending")
+        _, _, running_run_id = seed_operation(factory)
+        expired_task_id, expired_operation_id, expired_run_id = seed_operation(factory)
+        _, _, fallback_run_id = seed_operation(factory, task_status="completed")
+        now = datetime.now(UTC)
+        with factory() as session:
+            queued = session.get(Run, queued_run_id)
+            running = session.get(Run, running_run_id)
+            expired = session.get(Run, expired_run_id)
+            fallback = session.get(Run, fallback_run_id)
+            assert queued is not None and running is not None
+            assert expired is not None and fallback is not None
+            queued.status = "dispatching"
+            queued.next_attempt_at = now - timedelta(seconds=1)
+            running.lease_owner = "dispatcher:active"
+            running.lease_expires_at = now + timedelta(minutes=1)
+            expired.lease_owner = "dispatcher:stale"
+            expired.lease_expires_at = now - timedelta(seconds=1)
+            fallback.requested_runtime = {
+                "model": "gpt-5.3-codex-spark",
+                "provider": "openai-api",
+                "reasoning_effort": "low",
+                "instructions": "never expose this prompt",
+                "session_id": "never-expose-session",
+            }
+            fallback.observed_runtime = {
+                "requested_model": "gpt-5.3-codex-spark",
+                "model": "gpt-5.6-luna",
+                "provider": "openai-api",
+                "reasoning_effort": "low",
+            }
+            fallback.runtime_fallback = {
+                "applied": True,
+                "reason": "capacidad temporal",
+                "from_model": "gpt-5.3-codex-spark",
+                "to_model": "gpt-5.6-luna",
+                "secret": "never-project",
+            }
+            fallback.effective_profile_id = "luna-low"
+            trigger = session.query(RunEvent).filter_by(run_id=expired_run_id).one()
+            session.add(
+                WorkflowContinuation(
+                    operation_id=expired_operation_id,
+                    parent_task_id=expired_task_id,
+                    trigger_event_id=trigger.id,
+                    target_actor_id="agent:leader",
+                    action="resume_completed",
+                    status="pending",
+                    idempotency_key=f"continuation-{uuid.uuid4()}",
+                    context_snapshot={"directive": {"workflow_ref": "f18"}},
+                )
+            )
+            session.commit()
+
+        response = client.get("/v1/operations/autonomy?limit=20", headers=OPERATOR)
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["dispatcher"] == {
+            "queued": 1,
+            "retry_waiting": 0,
+            "claimed": 1,
+            "running": 2,
+            "expired_leases": 1,
+        }
+        assert payload["routing"]["fallbacks"] == 1
+        assert payload["continuations"]["pending"] == 1
+        assert payload["continuations"]["items"][0]["failure_code"] is None
+        serialized = json.dumps(payload)
+        assert "never expose" not in serialized
+        assert "never-expose-session" not in serialized
+        assert "never-project" not in serialized
+
+
+def test_provisioning_projection_exposes_lifecycle_without_payload_secrets(tmp_path: Path) -> None:
+    with operations_context(tmp_path) as (client, factory, _):
+        now = datetime.now(UTC)
+        with factory() as session:
+            session.add_all(
+                [
+                    AgentRequestRecord(
+                        idempotency_key="f18-provision-pending",
+                        request_hash="d" * 64,
+                        requested_by_actor_id="agent:leader",
+                        payload={
+                            "slug": "data-steward-pending",
+                            "role": "data_steward",
+                            "secret_refs": ["secret://never-expose"],
+                        },
+                        status="pending",
+                    ),
+                    AgentRequestRecord(
+                        idempotency_key="f18-provision-applied",
+                        request_hash="e" * 64,
+                        requested_by_actor_id="agent:leader",
+                        payload={"slug": "data-steward-applied", "role": "data_steward"},
+                        status="applied",
+                        decided_by_actor_id="agent:operator",
+                        applied_by_actor_id="system:agent-provisioner",
+                        decided_at=now,
+                        applied_at=now,
+                    ),
+                ]
+            )
+            session.commit()
+
+        response = client.get("/v1/operations/provisioning", headers=OPERATOR)
+        applied = client.get("/v1/operations/provisioning?status=applied", headers=OPERATOR)
+        assert response.status_code == 200
+        assert response.json()["counts_by_status"] == {"applied": 1, "pending": 1}
+        assert response.json()["pending_count"] == 1
+        assert applied.json()["count"] == 1
+        assert applied.json()["items"][0]["slug"] == "data-steward-applied"
+        assert "never-expose" not in json.dumps(response.json())
 
 
 def test_pending_approval_is_visible_and_expired_is_derived(tmp_path: Path) -> None:
@@ -248,16 +367,39 @@ def test_active_task_without_recent_activity_is_stale(tmp_path: Path) -> None:
         assert response.json()["items"][0]["stale"] is True
 
 
+def test_blocked_task_is_visible_but_does_not_prevent_idle(tmp_path: Path) -> None:
+    with operations_context(tmp_path) as (client, factory, _):
+        seed_operation(factory, task_status="blocked")
+        response = client.get("/v1/operations/tasks?active_only=true", headers=OPERATOR)
+        assert response.status_code == 200
+        assert response.json()["count"] == 1
+        assert response.json()["blocked_count"] == 1
+        assert response.json()["active_count"] == 0
+
+
 class FakeOperationsReader:
-    def __init__(self, *, active: int, events: list[dict[str, Any]]) -> None:
+    def __init__(
+        self,
+        *,
+        active: int,
+        events: list[dict[str, Any]],
+        autonomy: dict[str, Any] | None = None,
+    ) -> None:
         self.active = active
         self.events = events
+        self.autonomy = autonomy or {
+            "dispatcher": {"queued": 0, "claimed": 0, "expired_leases": 0},
+            "continuations": {"pending": 0},
+            "routing": {"fallbacks": 0},
+        }
         self.paths: list[str] = []
 
     def get(self, path: str, query: dict[str, str] | None = None) -> dict[str, Any]:
         self.paths.append(path)
         if path.endswith("/tasks"):
             return {"active_count": self.active, "stale_count": int(self.active > 0)}
+        if path.endswith("/autonomy"):
+            return self.autonomy
         return {
             "count": len(self.events),
             "items": self.events,
@@ -267,7 +409,15 @@ class FakeOperationsReader:
 
 def test_active_window_emits_deterministic_summary_only_when_due(tmp_path: Path) -> None:
     state_path = tmp_path / "active.json"
-    reader = FakeOperationsReader(active=2, events=[{"event_type": "run.started"}])
+    reader = FakeOperationsReader(
+        active=2,
+        events=[{"event_type": "run.started"}],
+        autonomy={
+            "dispatcher": {"queued": 1, "claimed": 1, "expired_leases": 1},
+            "continuations": {"pending": 1},
+            "routing": {"fallbacks": 1},
+        },
+    )
     first_at = datetime(2026, 7, 13, 8, 0, tzinfo=UTC)
     first = evaluate_watchdog(
         reader,
@@ -278,6 +428,9 @@ def test_active_window_emits_deterministic_summary_only_when_due(tmp_path: Path)
     assert first["summary_emitted"] is True
     assert first["summary_count"] == 1
     assert first["last_summary"]["kind"] == "deterministic_operations_rollup"
+    assert first["last_summary"]["queued_runs"] == 1
+    assert first["last_summary"]["pending_continuations"] == 1
+    assert first["last_summary"]["fallback_count"] == 1
     assert first["model_calls"] == 0
 
     second = evaluate_watchdog(
@@ -304,7 +457,11 @@ def test_idle_window_has_zero_model_calls_and_quota_exposes_counter(tmp_path: Pa
     assert state["summary_count"] == 0
     assert state["idle_checks"] == 1
     assert state["model_calls"] == 0
-    assert reader.paths == ["/v1/operations/tasks", "/v1/operations/timeline"]
+    assert reader.paths == [
+        "/v1/operations/tasks",
+        "/v1/operations/autonomy",
+        "/v1/operations/timeline",
+    ]
 
     with operations_context(tmp_path) as (client, factory, configured_state):
         configured_state.write_text(json.dumps(state), encoding="utf-8")
@@ -321,6 +478,7 @@ def test_idle_window_has_zero_model_calls_and_quota_exposes_counter(tmp_path: Pa
             session.commit()
         quota = client.get("/v1/operations/quota", headers=OPERATOR)
         assert quota.status_code == 200
+        assert quota.json()["watchdog"]["activity_status"] == "idle"
         assert quota.json()["watchdog"]["model_calls"] == 0
         assert quota.json()["watchdog"]["idle_checks"] == 1
         assert client.get("/v1/operations/quota").status_code == 401

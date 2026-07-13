@@ -74,6 +74,8 @@ def test_capabilities_publish_only_bootstrap_features(monkeypatch) -> None:
             "local_ttl_port_allocation",
             "environment_rollback",
             "operations_dashboard",
+            "autonomy_operations_projection",
+            "provisioning_operations_projection",
             "reconnectable_timeline",
             "process_watchdog_no_llm",
             "bearer_internal_auth",
@@ -122,6 +124,8 @@ def test_openapi_contains_the_bootstrap_and_catalog_routes(monkeypatch) -> None:
         "/v1/operations/tasks",
         "/v1/operations/timeline",
         "/v1/operations/usage",
+        "/v1/operations/autonomy",
+        "/v1/operations/provisioning",
         "/v1/operations/approvals",
         "/v1/operations/quota",
     }

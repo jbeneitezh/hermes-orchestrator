@@ -133,6 +133,8 @@ def create_app(
                 "local_ttl_port_allocation",
                 "environment_rollback",
                 "operations_dashboard",
+                "autonomy_operations_projection",
+                "provisioning_operations_projection",
                 "reconnectable_timeline",
                 "process_watchdog_no_llm",
                 "bearer_internal_auth",

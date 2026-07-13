@@ -100,6 +100,7 @@ def evaluate_watchdog(
     path = Path(state_path)
     state = _load_state(path)
     tasks = reader.get("/v1/operations/tasks", {"active_only": "true", "limit": "200"})
+    autonomy = reader.get("/v1/operations/autonomy", {"limit": "200"})
     query = {"limit": "200"}
     previous_cursor = state.get("last_cursor")
     if isinstance(previous_cursor, str) and previous_cursor:
@@ -108,16 +109,30 @@ def evaluate_watchdog(
     active_count = int(tasks.get("active_count", 0))
     stale_count = int(tasks.get("stale_count", 0))
     new_event_count = int(timeline.get("count", 0))
-    has_work = active_count > 0
+    dispatcher = autonomy.get("dispatcher", {})
+    continuations = autonomy.get("continuations", {})
+    routing = autonomy.get("routing", {})
+    queued_runs = int(dispatcher.get("queued", 0))
+    claimed_runs = int(dispatcher.get("claimed", 0))
+    expired_leases = int(dispatcher.get("expired_leases", 0))
+    pending_continuations = int(continuations.get("pending", 0))
+    fallback_count = int(routing.get("fallbacks", 0))
+    has_work = active_count > 0 or queued_runs > 0 or claimed_runs > 0 or pending_continuations > 0
     has_new_events = new_event_count > 0
     due = _summary_due(state, effective_now, summary_interval_seconds)
     summary_emitted = has_work and has_new_events and due
 
     state["checked_at"] = effective_now.isoformat()
+    state.pop("last_error", None)
     state["last_cursor"] = timeline.get("next_cursor") or previous_cursor
     state["active_tasks"] = active_count
     state["stale_tasks"] = stale_count
     state["new_events"] = new_event_count
+    state["queued_runs"] = queued_runs
+    state["claimed_runs"] = claimed_runs
+    state["expired_leases"] = expired_leases
+    state["pending_continuations"] = pending_continuations
+    state["fallback_count"] = fallback_count
     state["model_calls"] = 0
     state["status"] = "active" if has_work else "idle"
     state["summary_emitted"] = summary_emitted
@@ -132,6 +147,11 @@ def evaluate_watchdog(
             "active_tasks": active_count,
             "stale_tasks": stale_count,
             "new_events": new_event_count,
+            "queued_runs": queued_runs,
+            "claimed_runs": claimed_runs,
+            "expired_leases": expired_leases,
+            "pending_continuations": pending_continuations,
+            "fallback_count": fallback_count,
             "generated_at": effective_now.isoformat(),
             "model_calls": 0,
         }
