@@ -71,6 +71,9 @@ def test_capabilities_publish_only_bootstrap_features(monkeypatch) -> None:
             "immutable_promotion",
             "local_ttl_port_allocation",
             "environment_rollback",
+            "operations_dashboard",
+            "reconnectable_timeline",
+            "process_watchdog_no_llm",
         ],
     }
 
@@ -106,6 +109,13 @@ def test_openapi_contains_the_bootstrap_and_catalog_routes(monkeypatch) -> None:
         "/v1/environments/deployments/{deployment_id}/expire",
         "/v1/environments/promotions",
         "/v1/environments/{environment}/rollback",
+        "/operations",
+        "/v1/operations/fleet",
+        "/v1/operations/tasks",
+        "/v1/operations/timeline",
+        "/v1/operations/usage",
+        "/v1/operations/approvals",
+        "/v1/operations/quota",
     }
 
 

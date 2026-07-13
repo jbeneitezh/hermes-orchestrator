@@ -52,6 +52,12 @@ class Settings(BaseSettings):
     environment_local_port_end: int = 22999
     environment_local_default_ttl_seconds: int = 14400
     environment_local_max_ttl_seconds: int = 86400
+    operations_watchdog_state_path: str = "/var/lib/hermes-orchestrator/watchdog/state.json"
+    operations_watchdog_api_url: str = "http://orchestrator-api:8080"
+    operations_watchdog_actor_id: str = "agent:operator"
+    operations_watchdog_check_seconds: int = 300
+    operations_summary_interval_seconds: int = 9000
+    operations_stale_after_seconds: int = 1800
 
 
 @lru_cache

@@ -29,6 +29,7 @@ class Permission(StrEnum):
     ENVIRONMENTS_DEPLOY = "environments:deploy"
     ENVIRONMENTS_PROMOTE = "environments:promote"
     ENVIRONMENTS_ROLLBACK = "environments:rollback"
+    OPERATIONS_READ = "operations:read"
 
 
 ROLE_PERMISSIONS: dict[str, frozenset[Permission]] = {
@@ -52,6 +53,7 @@ ROLE_PERMISSIONS: dict[str, frozenset[Permission]] = {
             Permission.ENVIRONMENTS_DEPLOY,
             Permission.ENVIRONMENTS_PROMOTE,
             Permission.ENVIRONMENTS_ROLLBACK,
+            Permission.OPERATIONS_READ,
         }
     ),
     "operator": frozenset(
@@ -70,6 +72,7 @@ ROLE_PERMISSIONS: dict[str, frozenset[Permission]] = {
             Permission.ENVIRONMENTS_DEPLOY,
             Permission.ENVIRONMENTS_PROMOTE,
             Permission.ENVIRONMENTS_ROLLBACK,
+            Permission.OPERATIONS_READ,
         }
     ),
     "researcher": frozenset(
@@ -82,6 +85,7 @@ ROLE_PERMISSIONS: dict[str, frozenset[Permission]] = {
             Permission.RUNS_READ,
             Permission.USAGE_READ,
             Permission.ENVIRONMENTS_READ,
+            Permission.OPERATIONS_READ,
         }
     ),
     "developer": frozenset(
@@ -95,6 +99,7 @@ ROLE_PERMISSIONS: dict[str, frozenset[Permission]] = {
             Permission.USAGE_READ,
             Permission.ENVIRONMENTS_READ,
             Permission.ENVIRONMENTS_DEPLOY,
+            Permission.OPERATIONS_READ,
         }
     ),
     "validator": frozenset(
@@ -108,6 +113,7 @@ ROLE_PERMISSIONS: dict[str, frozenset[Permission]] = {
             Permission.FLEET_READ,
             Permission.USAGE_READ,
             Permission.ENVIRONMENTS_READ,
+            Permission.OPERATIONS_READ,
         }
     ),
 }

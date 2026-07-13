@@ -20,6 +20,7 @@ from hermes_orchestrator.environment_api import build_environment_router
 from hermes_orchestrator.fleet_api import build_fleet_router
 from hermes_orchestrator.fleet_runner import FleetRunner, HttpFleetRunnerClient
 from hermes_orchestrator.mcp_server import build_mcp_server
+from hermes_orchestrator.operations_api import build_operations_router
 from hermes_orchestrator.schemas import CapabilitiesResponse, HealthResponse
 from hermes_orchestrator.task_api import build_task_router
 from hermes_orchestrator.usage_api import build_usage_router
@@ -50,10 +51,12 @@ def create_app(
     app.include_router(build_task_router(resolved_settings))
     app.include_router(build_usage_router(resolved_settings))
     app.include_router(build_environment_router(resolved_settings))
+    effective_runner = fleet_runner or HttpFleetRunnerClient(resolved_settings)
+    app.include_router(build_operations_router(resolved_settings, effective_runner))
     app.include_router(
         build_fleet_router(
             resolved_settings,
-            fleet_runner or HttpFleetRunnerClient(resolved_settings),
+            effective_runner,
         )
     )
     app.mount("/mcp", mcp_manager.handle_request)
@@ -114,6 +117,9 @@ def create_app(
                 "immutable_promotion",
                 "local_ttl_port_allocation",
                 "environment_rollback",
+                "operations_dashboard",
+                "reconnectable_timeline",
+                "process_watchdog_no_llm",
             ],
         )
 

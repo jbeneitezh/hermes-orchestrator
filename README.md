@@ -38,6 +38,8 @@ La API queda disponible en `http://localhost:8080`:
 - `POST /v1/environments/deployments`: crea local o dev desde una rama y resuelve su SHA.
 - `POST /v1/environments/promotions`: promueve dev a pre por SHA y pre a prod-sim por tag, con aprobación independiente.
 - `POST /v1/environments/{environment}/rollback`: recupera un candidato inmutable anterior sin reescribir historial.
+- `GET /operations`: mesa de operaciones read-only, sin acceso directo a DB o Hermes.
+- `GET /v1/operations/{fleet,tasks,timeline,usage,approvals,quota}`: seis proyecciones públicas filtrables para UI y watchdog.
 - `GET /docs`: OpenAPI interactivo generado por FastAPI.
 
 ## Calidad
@@ -67,6 +69,8 @@ El API no monta Docker. `fleet-reconciler` es un proceso privado separado que va
 Cada run terminal genera como máximo un asiento en `usage_ledger`. Antes de cada dispatch se evalúan concurrencia, fan-out, retry, cuota, presupuesto soft/hard y circuito worker/perfil. Los límites por defecto provienen de `HERMES_ORCHESTRATOR_USAGE_*`; la tabla `budgets` permite estrecharlos por proyecto, agente, perfil o categoría y el presupuesto de la Task puede estrecharlos aún más.
 
 Los entornos se registran en PostgreSQL y no mutan reglas remotas de GitHub. `local` deriva su identidad de una Task, recibe puerto de un pool gobernado y expira por TTL; `dev` conserva rama y SHA resuelto; `pre` queda congelado por SHA; `prod-sim` conserva tag y SHA. `live` se deniega en v1. Repositorios y pool local se configuran con `HERMES_ORCHESTRATOR_ENVIRONMENT_*`.
+
+`operations-watchdog` consulta únicamente las rutas públicas de tareas y timeline. Cada 2,5 horas como máximo genera un rollup determinista cuando coinciden trabajo activo y eventos nuevos. En idle no crea Runs ni llamadas de modelo; su estado JSON mantiene `model_calls=0` y se proyecta en la ruta de quota.
 
 ## Arquitectura
 
