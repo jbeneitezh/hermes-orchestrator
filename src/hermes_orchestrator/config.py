@@ -69,6 +69,11 @@ class Settings(BaseSettings):
     run_dispatcher_heartbeat_seconds: float = 30.0
     run_dispatcher_retry_seconds: int = 15
     run_dispatcher_worker_secrets: dict[str, str] = {}
+    workflow_coordinator_id: str = "workflow-coordinator"
+    workflow_coordinator_batch_size: int = 10
+    workflow_coordinator_poll_seconds: float = 2.0
+    workflow_max_depth: int = 2
+    workflow_dispatch_timeout_seconds: int = 900
 
 
 @lru_cache
