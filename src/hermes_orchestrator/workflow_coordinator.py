@@ -285,7 +285,7 @@ def _successor_payload(
         {
             "workflow_depth": depth,
             "workflow_source_continuation_id": str(continuation.id),
-            "workflow_auto_continue": False,
+            "workflow_auto_continue": True,
         }
     )
     return {

@@ -237,7 +237,7 @@ def test_completed_crea_y_despacha_sucesor_compacto(coordinator_context) -> None
     assert successor.operation_id == child.operation_id
     assert successor.assignee_actor_id == "agent:leader"
     assert successor.budget["workflow_depth"] == 2
-    assert successor.budget["workflow_auto_continue"] is False
+    assert successor.budget["workflow_auto_continue"] is True
     assert run is not None and run.status == "dispatching"
     assert run.worker_actor_id == "agent:leader"
     assert "transcript" not in str(continuation.context_snapshot)
