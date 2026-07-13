@@ -81,6 +81,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "task_run_lifecycle",
                 "independent_review",
                 "approvals",
+                "hermes_runs_adapter",
+                "run_events",
             ],
         )
 

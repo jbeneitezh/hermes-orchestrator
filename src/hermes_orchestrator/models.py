@@ -205,6 +205,9 @@ class Run(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     error_code: Mapped[str | None] = mapped_column(String(100))
     summary: Mapped[str | None] = mapped_column(Text)
+    worker_run_id: Mapped[str | None] = mapped_column(String(160), index=True)
+    usage_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    error_details: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
     task: Mapped[Task] = relationship(back_populates="runs")
@@ -212,6 +215,9 @@ class Run(Base):
         back_populates="run", cascade="all, delete-orphan", order_by="Approval.created_at"
     )
     artifacts: Mapped[list[Artifact]] = relationship(back_populates="run")
+    events: Mapped[list[RunEvent]] = relationship(
+        back_populates="run", cascade="all, delete-orphan", order_by="RunEvent.sequence"
+    )
 
 
 class Approval(Base):
@@ -256,3 +262,19 @@ class Artifact(Base):
 
     task: Mapped[Task] = relationship(back_populates="artifacts")
     run: Mapped[Run | None] = relationship(back_populates="artifacts")
+
+
+class RunEvent(Base):
+    __tablename__ = "run_events"
+    __table_args__ = (UniqueConstraint("run_id", "sequence", name="uq_run_events_sequence"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("runs.id"), index=True)
+    sequence: Mapped[int] = mapped_column(Integer)
+    worker_event_id: Mapped[str | None] = mapped_column(String(160))
+    event_type: Mapped[str] = mapped_column(String(100), index=True)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    terminal: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    run: Mapped[Run] = relationship(back_populates="events")

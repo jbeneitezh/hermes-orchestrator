@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from hermes_orchestrator.config import Settings
 from hermes_orchestrator.database import get_session
+from hermes_orchestrator.hermes_execution import list_run_events
 from hermes_orchestrator.models import Approval, Run, Task, TaskComment
 from hermes_orchestrator.policy import Permission, actor_is_allowed
 from hermes_orchestrator.schemas import (
@@ -16,6 +17,7 @@ from hermes_orchestrator.schemas import (
     DispatchCommand,
     DispatchResponse,
     ErrorEnvelope,
+    RunEventResponse,
     RunResponse,
     TaskCommentCreate,
     TaskCommentResponse,
@@ -201,6 +203,22 @@ def build_task_router(settings: Settings) -> APIRouter:
         except LifecycleError as error:
             raise_http(error)
         return RunResponse.model_validate(run)
+
+    @router.get(
+        "/runs/{run_id}/events",
+        response_model=list[RunEventResponse],
+        responses={404: {"model": ErrorEnvelope}},
+    )
+    def get_run_events_route(
+        run_id: uuid.UUID,
+        session: SessionDependency,
+        _: Annotated[str, Depends(require(Permission.RUNS_READ))],
+    ) -> list[RunEventResponse]:
+        try:
+            events = list_run_events(session, run_id)
+        except LifecycleError as error:
+            raise_http(error)
+        return [RunEventResponse.model_validate(event) for event in events]
 
     @router.post(
         "/runs/{run_id}/approval",

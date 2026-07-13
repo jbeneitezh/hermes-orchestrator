@@ -56,6 +56,8 @@ def test_capabilities_publish_only_bootstrap_features(monkeypatch) -> None:
             "task_run_lifecycle",
             "independent_review",
             "approvals",
+            "hermes_runs_adapter",
+            "run_events",
         ],
     }
 
@@ -78,6 +80,7 @@ def test_openapi_contains_the_bootstrap_and_catalog_routes(monkeypatch) -> None:
         "/v1/tasks/{task_id}/comments",
         "/v1/tasks/{task_id}/cancel",
         "/v1/runs/{run_id}",
+        "/v1/runs/{run_id}/events",
         "/v1/runs/{run_id}/approval",
     }
 

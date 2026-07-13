@@ -198,7 +198,22 @@ class RunResponse(BaseModel):
     finished_at: datetime | None
     error_code: str | None
     summary: str | None
+    worker_run_id: str | None
+    usage_snapshot: dict[str, Any]
+    error_details: dict[str, Any]
     approvals: list[ApprovalResponse]
+    created_at: datetime
+
+
+class RunEventResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", from_attributes=True)
+
+    id: uuid.UUID
+    sequence: int
+    worker_event_id: str | None
+    event_type: str
+    payload: dict[str, Any]
+    terminal: bool
     created_at: datetime
 
 

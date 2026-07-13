@@ -131,6 +131,7 @@ def test_happy_transition_preserves_task_and_run(lifecycle_context) -> None:
 
     task = client.get(f"/v1/tasks/{task_id}", headers=LEADER)
     run = client.get(f"/v1/runs/{run_id}", headers=DEVELOPER)
+    events = client.get(f"/v1/runs/{run_id}/events", headers=DEVELOPER)
     completed_cancel = client.post(
         f"/v1/tasks/{task_id}/cancel",
         headers=LEADER | {"Idempotency-Key": "happy-cancel-invalid"},
@@ -145,6 +146,7 @@ def test_happy_transition_preserves_task_and_run(lifecycle_context) -> None:
     assert task.json()["status"] == "completed"
     assert len(task.json()["runs"]) == 1
     assert run.json()["status"] == "completed"
+    assert events.json() == []
     assert completed_cancel.status_code == 409
     assert missing_task.status_code == 404
     assert missing_run.status_code == 404
