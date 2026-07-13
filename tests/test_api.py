@@ -58,6 +58,8 @@ def test_capabilities_publish_only_bootstrap_features(monkeypatch) -> None:
             "approvals",
             "hermes_runs_adapter",
             "run_events",
+            "mcp_streamable_http",
+            "mcp_governed_tools",
         ],
     }
 

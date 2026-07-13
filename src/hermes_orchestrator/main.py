@@ -16,6 +16,7 @@ from hermes_orchestrator.database import (
     create_session_factory,
     database_is_ready,
 )
+from hermes_orchestrator.mcp_server import build_mcp_server
 from hermes_orchestrator.schemas import CapabilitiesResponse, HealthResponse
 from hermes_orchestrator.task_api import build_task_router
 
@@ -24,10 +25,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     resolved_settings = settings or get_settings()
     engine = create_database_engine(resolved_settings.database_url)
     session_factory = create_session_factory(engine)
+    _, mcp_manager = build_mcp_server(resolved_settings, session_factory)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-        yield
+        async with mcp_manager.run():
+            yield
         engine.dispose()
 
     app = FastAPI(
@@ -39,6 +42,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.session_factory = session_factory
     app.include_router(build_catalog_router(resolved_settings))
     app.include_router(build_task_router(resolved_settings))
+    app.mount("/mcp", mcp_manager.handle_request)
 
     @app.get(
         "/health",
@@ -83,6 +87,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "approvals",
                 "hermes_runs_adapter",
                 "run_events",
+                "mcp_streamable_http",
+                "mcp_governed_tools",
             ],
         )
 
