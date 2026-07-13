@@ -319,6 +319,32 @@ class RunEvent(Base):
     run: Mapped[Run] = relationship(back_populates="events")
 
 
+class WorkflowContinuation(Base):
+    __tablename__ = "workflow_continuations"
+    __table_args__ = (
+        UniqueConstraint(
+            "trigger_event_id",
+            "target_actor_id",
+            "action",
+            name="uq_workflow_continuations_trigger_actor_action",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    operation_id: Mapped[uuid.UUID] = mapped_column(Uuid, index=True)
+    parent_task_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tasks.id"), index=True)
+    trigger_event_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("run_events.id"), index=True)
+    target_actor_id: Mapped[str] = mapped_column(String(160), index=True)
+    action: Mapped[str] = mapped_column(String(100))
+    status: Mapped[str] = mapped_column(String(30), default="pending", index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(160), unique=True, index=True)
+    context_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    failure_code: Mapped[str | None] = mapped_column(String(100))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    dispatched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class UsageLedger(Base):
     __tablename__ = "usage_ledger"
 
