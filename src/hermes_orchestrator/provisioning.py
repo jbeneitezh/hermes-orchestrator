@@ -294,7 +294,11 @@ class ManagedAgentRenderer:
         agent_root = self.managed_root / "agents" / payload.slug
         runtime_root = self.data_root / payload.slug / "runtime"
         for leaf in ("hermes", "home", "workspace", "managed"):
-            (self.data_root / payload.slug / leaf).mkdir(parents=True, exist_ok=True)
+            worker_path = self.data_root / payload.slug / leaf
+            worker_path.mkdir(parents=True, exist_ok=True)
+            with suppress(OSError):
+                os.chown(worker_path, -1, 10000)
+                worker_path.chmod(0o770)
         agent_root.mkdir(parents=True, exist_ok=True)
         runtime_root.mkdir(parents=True, exist_ok=True)
         manifest = payload.model_dump(mode="json")
