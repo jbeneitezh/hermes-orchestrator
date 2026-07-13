@@ -18,6 +18,10 @@ class Settings(BaseSettings):
     app_name: str = "Hermes Orchestrator"
     environment: Literal["development", "test", "preproduction", "production"] = "development"
     database_url: str = "postgresql+psycopg://hermes:hermes@localhost:55432/hermes_orchestrator"
+    actor_roles: dict[str, str] = {
+        "user:owner": "owner",
+        "agent:leader": "leader",
+    }
 
 
 @lru_cache

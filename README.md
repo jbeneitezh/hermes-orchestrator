@@ -22,6 +22,9 @@ La API queda disponible en `http://localhost:8080`:
 
 - `GET /health`: comprueba API y conexión a PostgreSQL.
 - `GET /v1/capabilities`: publica las capacidades implementadas por esta versión.
+- `GET /v1/agents` y `GET /v1/agents/{id}`: catálogo observado.
+- `POST /v1/agents/requests`: solicitud idempotente de alta; no crea contenedores.
+- `GET /v1/execution-profiles`: perfiles efectivos permitidos.
 - `GET /docs`: OpenAPI interactivo generado por FastAPI.
 
 ## Calidad
@@ -43,6 +46,8 @@ docker compose down -v
 ```
 
 No guardes secretos en `.env.example` ni en el repositorio. La variable `HERMES_ORCHESTRATOR_DATABASE_URL` acepta la URL de PostgreSQL del entorno.
+
+Las rutas gobernadas exigen `X-Actor-Id`. El rol se resuelve desde `HERMES_ORCHESTRATOR_ACTOR_ROLES`; el cliente no puede declarar ni elevar su rol. Las mutaciones exigen además `Idempotency-Key`. Esta resolución es el bootstrap de confianza para la red privada y se sustituirá por autenticación fuerte sin cambiar el servicio de políticas.
 
 ## Arquitectura
 

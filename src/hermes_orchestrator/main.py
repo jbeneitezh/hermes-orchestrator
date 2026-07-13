@@ -9,14 +9,20 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.engine import Engine
 
 from hermes_orchestrator import __version__
+from hermes_orchestrator.api import build_catalog_router
 from hermes_orchestrator.config import Settings, get_settings
-from hermes_orchestrator.database import create_database_engine, database_is_ready
+from hermes_orchestrator.database import (
+    create_database_engine,
+    create_session_factory,
+    database_is_ready,
+)
 from hermes_orchestrator.schemas import CapabilitiesResponse, HealthResponse
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     resolved_settings = settings or get_settings()
     engine = create_database_engine(resolved_settings.database_url)
+    session_factory = create_session_factory(engine)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -29,6 +35,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     app.state.engine = engine
+    app.state.session_factory = session_factory
+    app.include_router(build_catalog_router(resolved_settings))
 
     @app.get(
         "/health",
@@ -59,7 +67,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return CapabilitiesResponse(
             service="hermes-orchestrator",
             version=__version__,
-            capabilities=["health", "capabilities", "postgresql", "alembic"],
+            capabilities=[
+                "health",
+                "capabilities",
+                "postgresql",
+                "alembic",
+                "agent_catalog",
+                "execution_profiles",
+                "deny_by_default_policy",
+                "append_only_audit",
+            ],
         )
 
     return app

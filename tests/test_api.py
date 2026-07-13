@@ -44,16 +44,32 @@ def test_capabilities_publish_only_bootstrap_features(monkeypatch) -> None:
         "service": "hermes-orchestrator",
         "version": "0.1.0",
         "api_version": "v1",
-        "capabilities": ["health", "capabilities", "postgresql", "alembic"],
+        "capabilities": [
+            "health",
+            "capabilities",
+            "postgresql",
+            "alembic",
+            "agent_catalog",
+            "execution_profiles",
+            "deny_by_default_policy",
+            "append_only_audit",
+        ],
     }
 
 
-def test_openapi_contains_exactly_the_two_domain_routes(monkeypatch) -> None:
+def test_openapi_contains_the_bootstrap_and_catalog_routes(monkeypatch) -> None:
     with build_client(monkeypatch) as client:
         schema = client.get("/openapi.json").json()
 
     domain_paths = {path for path in schema["paths"] if not path.startswith("/docs")}
-    assert domain_paths == {"/health", "/v1/capabilities"}
+    assert domain_paths == {
+        "/health",
+        "/v1/capabilities",
+        "/v1/agents",
+        "/v1/agents/requests",
+        "/v1/agents/{agent_id}",
+        "/v1/execution-profiles",
+    }
 
 
 def test_settings_accept_environment_overrides(monkeypatch) -> None:
