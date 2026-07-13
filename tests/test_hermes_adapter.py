@@ -16,7 +16,7 @@ from hermes_orchestrator.hermes_adapter import (
     WorkerUnhealthyError,
 )
 from hermes_orchestrator.hermes_execution import execute_run_via_hermes, list_run_events
-from hermes_orchestrator.models import Base, Run, RunEvent, Task
+from hermes_orchestrator.models import Base, ExecutionProfile, Run, RunEvent, Task
 from tests.fakes.hermes_server import FakeHermesServer, FakeHermesState
 
 
@@ -28,6 +28,18 @@ def session_factory(tmp_path: Path) -> sessionmaker[Session]:
 
 
 def create_run(session: Session) -> Run:
+    if session.get(ExecutionProfile, "spark-low") is None:
+        session.add(
+            ExecutionProfile(
+                id="spark-low",
+                provider="openai-api",
+                model="gpt-5.3-codex-spark",
+                reasoning_effort="low",
+                max_iterations=8,
+                timeout_seconds=300,
+                relative_cost=1,
+            )
+        )
     task = Task(
         requester_actor_id="agent:leader",
         idempotency_key=str(uuid.uuid4()),

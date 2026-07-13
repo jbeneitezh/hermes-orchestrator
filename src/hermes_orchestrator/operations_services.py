@@ -12,7 +12,15 @@ from sqlalchemy.orm import Session, selectinload
 
 from hermes_orchestrator.config import Settings
 from hermes_orchestrator.fleet_runner import FleetRunner
-from hermes_orchestrator.models import Approval, AuditEvent, Run, RunEvent, Task
+from hermes_orchestrator.models import (
+    AgentRequestRecord,
+    Approval,
+    AuditEvent,
+    Run,
+    RunEvent,
+    Task,
+    WorkflowContinuation,
+)
 from hermes_orchestrator.usage_services import control_status, ensure_aware, summarize_usage
 
 ACTIVE_TASK_STATUSES = {
@@ -23,6 +31,8 @@ ACTIVE_TASK_STATUSES = {
     "awaiting_approval",
     "blocked",
 }
+ACTIONABLE_TASK_STATUSES = ACTIVE_TASK_STATUSES - {"blocked"}
+ACTIVE_RUN_STATUSES = {"dispatching", "running", "awaiting_approval"}
 
 
 class OperationsReadError(Exception):
@@ -130,7 +140,8 @@ def task_view(
         "count": len(rendered),
         "counts_by_status": counts,
         "stale_count": stale_count,
-        "active_count": sum(item["status"] in ACTIVE_TASK_STATUSES for item in rendered),
+        "active_count": sum(item["status"] in ACTIONABLE_TASK_STATUSES for item in rendered),
+        "blocked_count": sum(item["status"] == "blocked" for item in rendered),
         "observed_at": effective_now,
     }
 
@@ -229,6 +240,187 @@ def usage_view(
     return summarize_usage(session, group_by=group_by, operation_id=operation_id)
 
 
+def _lease_state(run: Run, now: datetime) -> str:
+    if run.status not in ACTIVE_RUN_STATUSES:
+        return "released"
+    if run.lease_owner is None or run.lease_expires_at is None:
+        return "unclaimed"
+    if ensure_aware(run.lease_expires_at) <= now:
+        return "expired"
+    return "claimed"
+
+
+def _runtime_fields(payload: dict[str, Any], *, observed: bool = False) -> dict[str, Any]:
+    return {
+        "model": payload.get("model") or payload.get("model_alias"),
+        "provider": payload.get("provider"),
+        "reasoning_effort": payload.get("reasoning_effort"),
+        **({"requested_model": payload.get("requested_model")} if observed else {}),
+    }
+
+
+def _fallback_fields(payload: dict[str, Any]) -> dict[str, Any]:
+    allowed = (
+        "applied",
+        "reason",
+        "from_model",
+        "to_model",
+        "from_provider",
+        "to_provider",
+    )
+    return {key: payload.get(key) for key in allowed if key in payload}
+
+
+def autonomy_view(
+    session: Session,
+    *,
+    operation_id: uuid.UUID | None = None,
+    now: datetime | None = None,
+    limit: int = 100,
+) -> dict[str, Any]:
+    effective_now = now or utc_now()
+    run_statement = select(Run).order_by(Run.created_at.desc())
+    continuation_statement = select(WorkflowContinuation).order_by(
+        WorkflowContinuation.created_at.desc()
+    )
+    if operation_id is not None:
+        run_statement = run_statement.where(Run.operation_id == operation_id)
+        continuation_statement = continuation_statement.where(
+            WorkflowContinuation.operation_id == operation_id
+        )
+    runs = list(session.scalars(run_statement.limit(limit)))
+    continuations = list(session.scalars(continuation_statement.limit(limit)))
+    rendered_runs: list[dict[str, Any]] = []
+    for run in runs:
+        requested = run.requested_runtime if isinstance(run.requested_runtime, dict) else {}
+        observed = run.observed_runtime if isinstance(run.observed_runtime, dict) else {}
+        fallback = run.runtime_fallback if isinstance(run.runtime_fallback, dict) else {}
+        rendered_runs.append(
+            {
+                "id": str(run.id),
+                "task_id": str(run.task_id),
+                "operation_id": str(run.operation_id),
+                "worker_actor_id": run.worker_actor_id,
+                "status": run.status,
+                "dispatch_attempts": run.dispatch_attempts,
+                "next_attempt_at": run.next_attempt_at,
+                "lease_owner": run.lease_owner,
+                "lease_expires_at": run.lease_expires_at,
+                "lease_state": _lease_state(run, effective_now),
+                "requested": {
+                    "profile_id": run.requested_profile_id,
+                    **_runtime_fields(requested),
+                },
+                "observed": {
+                    "profile_id": run.effective_profile_id,
+                    **_runtime_fields(observed, observed=True),
+                },
+                "fallback": _fallback_fields(fallback),
+                "error_code": run.error_code,
+                "created_at": run.created_at,
+            }
+        )
+    rendered_continuations = [
+        {
+            "id": str(item.id),
+            "operation_id": str(item.operation_id),
+            "parent_task_id": str(item.parent_task_id),
+            "target_actor_id": item.target_actor_id,
+            "action": item.action,
+            "status": item.status,
+            "failure_code": item.failure_code,
+            "created_at": item.created_at,
+            "dispatched_at": item.dispatched_at,
+            "failed_at": item.failed_at,
+        }
+        for item in continuations
+    ]
+    continuation_counts: dict[str, int] = {}
+    for item in rendered_continuations:
+        item_status = str(item["status"])
+        continuation_counts[item_status] = continuation_counts.get(item_status, 0) + 1
+    return {
+        "dispatcher": {
+            "queued": sum(
+                item["status"] == "dispatching"
+                and item["lease_state"] == "unclaimed"
+                and ensure_aware(item["next_attempt_at"]) <= effective_now
+                for item in rendered_runs
+            ),
+            "retry_waiting": sum(
+                item["status"] == "dispatching"
+                and ensure_aware(item["next_attempt_at"]) > effective_now
+                for item in rendered_runs
+            ),
+            "claimed": sum(item["lease_state"] == "claimed" for item in rendered_runs),
+            "running": sum(item["status"] == "running" for item in rendered_runs),
+            "expired_leases": sum(item["lease_state"] == "expired" for item in rendered_runs),
+        },
+        "routing": {
+            "fallbacks": sum(bool(item["fallback"].get("applied")) for item in rendered_runs),
+            "unverified_terminal": sum(
+                item["status"] in {"completed", "failed"} and item["observed"]["profile_id"] is None
+                for item in rendered_runs
+            ),
+        },
+        "continuations": {
+            "counts_by_status": continuation_counts,
+            "pending": continuation_counts.get("pending", 0),
+            "dispatched": continuation_counts.get("dispatched", 0),
+            "failed": continuation_counts.get("failed", 0),
+            "items": rendered_continuations,
+        },
+        "runs": rendered_runs,
+        "run_count": len(rendered_runs),
+        "observed_at": effective_now,
+    }
+
+
+def provisioning_view(
+    session: Session,
+    *,
+    status: str | None = None,
+    limit: int = 100,
+) -> dict[str, Any]:
+    statement = select(AgentRequestRecord).order_by(AgentRequestRecord.updated_at.desc())
+    if status is not None:
+        statement = statement.where(AgentRequestRecord.status == status)
+    requests = list(session.scalars(statement.limit(limit)))
+    items: list[dict[str, Any]] = []
+    counts: dict[str, int] = {}
+    for request in requests:
+        payload = request.payload if isinstance(request.payload, dict) else {}
+        counts[request.status] = counts.get(request.status, 0) + 1
+        items.append(
+            {
+                "id": str(request.id),
+                "request_type": request.request_type,
+                "status": request.status,
+                "slug": payload.get("slug"),
+                "role": payload.get("role"),
+                "requested_by_actor_id": request.requested_by_actor_id,
+                "decided_by_actor_id": request.decided_by_actor_id,
+                "applied_by_actor_id": request.applied_by_actor_id,
+                "retired_by_actor_id": request.retired_by_actor_id,
+                "application_error_code": request.application_error_code,
+                "created_at": request.created_at,
+                "updated_at": request.updated_at,
+                "decided_at": request.decided_at,
+                "applied_at": request.applied_at,
+                "retired_at": request.retired_at,
+            }
+        )
+    return {
+        "items": items,
+        "count": len(items),
+        "counts_by_status": counts,
+        "pending_count": counts.get("pending", 0),
+        "ready_to_apply_count": counts.get("approved", 0),
+        "failed_count": counts.get("apply_failed", 0),
+        "observed_at": utc_now(),
+    }
+
+
 def approvals_view(
     session: Session,
     *,
@@ -292,6 +484,7 @@ def read_watchdog_state(path: str, *, now: datetime | None = None) -> dict[str, 
     except (OSError, json.JSONDecodeError):
         return {"status": "invalid", "model_calls": 0}
     checked_at_raw = payload.get("checked_at")
+    payload["activity_status"] = payload.get("status", "unknown")
     effective_now = now or utc_now()
     if isinstance(checked_at_raw, str):
         try:

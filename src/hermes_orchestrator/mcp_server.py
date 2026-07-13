@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from mcp import types
 from mcp.server.lowlevel import Server
@@ -16,31 +16,41 @@ from hermes_orchestrator.config import Settings
 from hermes_orchestrator.models import Agent, CommunicationEdge, Run, Task
 from hermes_orchestrator.policy import Permission, actor_is_allowed, communication_is_allowed
 from hermes_orchestrator.repositories import AgentRepository
-from hermes_orchestrator.schemas import TaskCreate
+from hermes_orchestrator.schemas import AgentRequestCreate, TaskCreate
+from hermes_orchestrator.services import IdempotencyConflictError, request_agent
 from hermes_orchestrator.task_services import (
     LifecycleError,
     add_comment,
     create_task,
     dispatch_task,
     get_task,
+    handoff_task,
 )
 from hermes_orchestrator.usage_services import summarize_usage
 
 TOOL_PERMISSIONS: dict[str, Permission] = {
     "agents_list": Permission.AGENTS_READ,
+    "agent_request": Permission.AGENTS_REQUEST,
     "task_create": Permission.TASKS_CREATE,
     "task_dispatch": Permission.TASKS_DISPATCH,
     "task_get": Permission.TASKS_READ,
     "task_comment": Permission.TASKS_COMMENT,
+    "task_block": Permission.TASKS_COMMENT,
+    "task_complete": Permission.TASKS_COMMENT,
     "usage_summary": Permission.RUNS_READ,
 }
 ROLE_TOOL_ALLOWLIST: dict[str, set[str]] = {
     "leader": set(TOOL_PERMISSIONS),
     "operator": {"agents_list", "task_get", "usage_summary"},
-    "researcher": {"task_create", "task_get", "task_comment"},
-    "developer": {"task_create", "task_get", "task_comment"},
-    "validator": {"task_get", "task_comment"},
+    "researcher": {"task_create", "task_get", "task_comment", "task_block", "task_complete"},
+    "developer": {"task_create", "task_get", "task_comment", "task_block", "task_complete"},
+    "validator": {"task_get", "task_comment", "task_block", "task_complete"},
+    "data_steward": {"task_get"},
 }
+
+
+class McpAgentRequest(AgentRequestCreate):
+    idempotency_key: str = Field(min_length=8, max_length=160)
 
 
 class McpTaskCreate(TaskCreate):
@@ -74,6 +84,27 @@ class McpTaskComment(BaseModel):
     body: str = Field(min_length=1, max_length=10000)
 
 
+class McpTaskBlock(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    task_id: uuid.UUID
+    idempotency_key: str = Field(min_length=8, max_length=160)
+    block_type: Literal["dependency", "clarification", "access", "environment", "external"]
+    summary: str = Field(min_length=1, max_length=2000)
+    needed_action: str = Field(min_length=1, max_length=2000)
+    references: list[str] = Field(default_factory=list, max_length=20)
+
+
+class McpTaskComplete(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    task_id: uuid.UUID
+    idempotency_key: str = Field(min_length=8, max_length=160)
+    summary: str = Field(min_length=1, max_length=4000)
+    outputs: list[str] = Field(min_length=1, max_length=20)
+    evidence: list[str] = Field(default_factory=list, max_length=20)
+
+
 class McpUsageSummary(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -103,6 +134,11 @@ def _tool(name: str, description: str, schema: type[BaseModel] | None = None) ->
 
 TOOLS: dict[str, types.Tool] = {
     "agents_list": _tool("agents_list", "Lista agentes visibles para la identidad actual."),
+    "agent_request": _tool(
+        "agent_request",
+        "Solicita capacidad de agente de forma idempotente; no la aplica.",
+        McpAgentRequest,
+    ),
     "task_create": _tool("task_create", "Crea una tarea durable e idempotente.", McpTaskCreate),
     "task_dispatch": _tool(
         "task_dispatch",
@@ -112,6 +148,14 @@ TOOLS: dict[str, types.Tool] = {
     "task_get": _tool("task_get", "Consulta una tarea visible y sus runs.", McpTaskGet),
     "task_comment": _tool(
         "task_comment", "Añade un comentario durable a una tarea visible.", McpTaskComment
+    ),
+    "task_block": _tool(
+        "task_block", "Bloquea el trabajo activo con una necesidad tipada.", McpTaskBlock
+    ),
+    "task_complete": _tool(
+        "task_complete",
+        "Entrega un handoff terminal estructurado sin autoaprobarlo.",
+        McpTaskComplete,
     ),
     "usage_summary": _tool(
         "usage_summary", "Agrega tokens por operación, agente y perfil.", McpUsageSummary
@@ -204,6 +248,9 @@ def _run_summary(run: Run) -> dict[str, Any]:
         "status": run.status,
         "summary": run.summary,
         "error_code": run.error_code,
+        "requested_runtime": run.requested_runtime,
+        "observed_runtime": run.observed_runtime,
+        "runtime_fallback": run.runtime_fallback,
         "usage": run.usage_snapshot,
     }
 
@@ -247,19 +294,43 @@ def _execute_tool(
         ]
         return {"agents": agents}
 
+    if tool_name == "agent_request":
+        parsed = _parse(McpAgentRequest, arguments)
+        payload = parsed.model_dump(mode="json")
+        idempotency_key = str(payload.pop("idempotency_key"))
+        try:
+            request_result = request_agent(
+                session,
+                actor_id=identity.actor_id,
+                idempotency_key=idempotency_key,
+                payload=payload,
+            )
+        except IdempotencyConflictError as exc:
+            raise McpDomainError(
+                "idempotency_conflict", "La clave ya se usó con otra solicitud"
+            ) from exc
+        return {
+            "request": {
+                "id": str(request_result.request.id),
+                "status": request_result.request.status,
+                "created_at": request_result.request.created_at.isoformat(),
+            },
+            "replayed": request_result.replayed,
+        }
+
     if tool_name == "task_create":
         parsed = _parse(McpTaskCreate, arguments)
         payload = parsed.model_dump(mode="python")
         idempotency_key = str(payload.pop("idempotency_key"))
-        result = create_task(
+        task_result = create_task(
             session,
             actor_id=identity.actor_id,
             idempotency_key=idempotency_key,
             payload=payload,
         )
         return {
-            "task": _task_summary(cast(Task, result.value)),
-            "replayed": result.replayed,
+            "task": _task_summary(cast(Task, task_result.value)),
+            "replayed": task_result.replayed,
         }
 
     if tool_name == "task_dispatch":
@@ -269,7 +340,7 @@ def _execute_tool(
             raise McpDomainError("not_found", "Agente ejecutor no encontrado")
         if not communication_is_allowed(session, identity.agent.id, target.id, "task", "dispatch"):
             raise McpDomainError("communication_denied", "Edge de dispatch no permitido")
-        result = dispatch_task(
+        dispatch_result = dispatch_task(
             session,
             task_id=parsed.task_id,
             actor_id=identity.actor_id,
@@ -285,8 +356,8 @@ def _execute_tool(
             settings=settings,
         )
         return {
-            "run": _run_summary(cast(Run, result.value)),
-            "replayed": result.replayed,
+            "run": _run_summary(cast(Run, dispatch_result.value)),
+            "replayed": dispatch_result.replayed,
         }
 
     if tool_name == "task_get":
@@ -301,21 +372,58 @@ def _execute_tool(
         task = get_task(session, parsed.task_id)
         if not _task_is_visible(task, identity):
             raise McpDomainError("not_found", "Tarea no encontrada")
-        result = add_comment(
+        comment_result = add_comment(
             session,
             task_id=task.id,
             actor_id=identity.actor_id,
             idempotency_key=parsed.idempotency_key,
             body=parsed.body,
         )
-        comment = cast(Any, result.value)
+        comment = cast(Any, comment_result.value)
         return {
             "comment": {
                 "id": str(comment.id),
                 "actor_id": comment.actor_id,
                 "body": comment.body,
             },
-            "replayed": result.replayed,
+            "replayed": comment_result.replayed,
+        }
+
+    if tool_name in {"task_block", "task_complete"}:
+        schema = McpTaskBlock if tool_name == "task_block" else McpTaskComplete
+        parsed = _parse(schema, arguments)
+        payload = parsed.model_dump(mode="json")
+        task_id = uuid.UUID(str(payload.pop("task_id")))
+        idempotency_key = str(payload.pop("idempotency_key"))
+        task = get_task(session, task_id)
+        if not _task_is_visible(task, identity):
+            raise McpDomainError("not_found", "Tarea no encontrada")
+        handoff = {
+            "type": "task_handoff",
+            "outcome": "blocked" if tool_name == "task_block" else "completed",
+            **payload,
+        }
+        handoff_result = handoff_task(
+            session,
+            task_id=task.id,
+            actor_id=identity.actor_id,
+            idempotency_key=idempotency_key,
+            handoff=handoff,
+        )
+        approval = handoff_result.approval
+        return {
+            "task": _task_summary(handoff_result.task),
+            "handoff": handoff_result.handoff,
+            "approval": (
+                {
+                    "id": str(approval.id),
+                    "action": approval.action,
+                    "status": approval.status,
+                }
+                if approval is not None
+                else None
+            ),
+            "replayed": handoff_result.replayed,
         }
 
     if tool_name == "usage_summary":

@@ -26,6 +26,10 @@ class AgentRepository:
         statement = select(Agent).options(selectinload(Agent.instances)).where(Agent.id == agent_id)
         return self.session.scalar(statement)
 
+    def get_by_slug(self, slug: str) -> Agent | None:
+        statement = select(Agent).options(selectinload(Agent.instances)).where(Agent.slug == slug)
+        return self.session.scalar(statement)
+
 
 class AgentRequestRepository:
     def __init__(self, session: Session) -> None:
@@ -35,6 +39,9 @@ class AgentRequestRepository:
         return self.session.scalar(
             select(AgentRequestRecord).where(AgentRequestRecord.idempotency_key == key)
         )
+
+    def get(self, request_id: uuid.UUID) -> AgentRequestRecord | None:
+        return self.session.get(AgentRequestRecord, request_id)
 
     def add(self, request: AgentRequestRecord) -> None:
         self.session.add(request)

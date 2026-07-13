@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -23,6 +24,15 @@ class FakeHermesState:
     event_requests: int = 0
     last_event_ids: list[str | None] = field(default_factory=list)
     status: str = "completed"
+    start_requests: int = 0
+    status_requests: int = 0
+    idempotency_keys: list[str | None] = field(default_factory=list)
+    start_payloads: list[dict[str, Any]] = field(default_factory=list)
+    effective_model: str | None = "gpt-5.3-codex-spark"
+    effective_provider: str | None = "openai-api"
+    effective_reasoning_effort: str | None = "low"
+    runtime_fallback: dict[str, Any] = field(default_factory=dict)
+    on_start: Callable[[], None] | None = None
 
 
 class FakeHermesServer:
@@ -71,18 +81,25 @@ class FakeHermesServer:
                     self.send_json(200, {"features": state.features})
                     return
                 if self.path == "/v1/runs/fake-run":
+                    state.status_requests += 1
                     error = (
                         {"code": "provider_failed", "message": "Proveedor rechazó la petición"}
                         if state.status == "failed"
                         else None
                     )
+                    requested = state.start_payloads[-1] if state.start_payloads else {}
                     self.send_json(
                         200,
                         {
                             "run_id": "fake-run",
                             "status": state.status,
                             "output": "F8_OK" if state.status == "completed" else None,
-                            "model": "gpt-5.3-codex-spark",
+                            "requested_model": requested.get("model"),
+                            "requested_reasoning_effort": requested.get("reasoning_effort"),
+                            "effective_model": state.effective_model,
+                            "effective_provider": state.effective_provider,
+                            "effective_reasoning_effort": state.effective_reasoning_effort,
+                            "runtime_fallback": state.runtime_fallback,
                             "usage": {"prompt_tokens": 11, "completion_tokens": 3},
                             "error": error,
                         },
@@ -99,6 +116,10 @@ class FakeHermesServer:
                     self.wfile.flush()
                     if state.scenario == "reconnect" and state.event_requests == 1:
                         return
+                    if state.scenario == "disconnect":
+                        return
+                    if state.scenario == "active_then_completed":
+                        state.status = "completed"
                     terminal = "run.failed" if state.status == "failed" else "run.completed"
                     terminal_frame = (
                         f'id: 2\nevent: {terminal}\ndata: {{"status":"{state.status}"}}\n\n'
@@ -110,6 +131,25 @@ class FakeHermesServer:
 
             def do_POST(self) -> None:
                 if self.path == "/v1/runs":
+                    state.start_requests += 1
+                    state.idempotency_keys.append(self.headers.get("Idempotency-Key"))
+                    length = int(self.headers.get("Content-Length", "0"))
+                    raw = self.rfile.read(length) if length else b"{}"
+                    payload = json.loads(raw.decode())
+                    state.start_payloads.append(payload if isinstance(payload, dict) else {})
+                    if state.scenario == "alias_unavailable":
+                        self.send_json(
+                            400,
+                            {
+                                "error": {
+                                    "code": "unsupported_model_route",
+                                    "message": "Alias no disponible",
+                                }
+                            },
+                        )
+                        return
+                    if state.on_start is not None:
+                        state.on_start()
                     self.send_json(202, {"run_id": "fake-run"})
                     return
                 if self.path == "/v1/runs/fake-run/stop":

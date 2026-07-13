@@ -75,9 +75,20 @@ class HermesRunState:
     run_id: str
     status: str
     output: str | None
-    model: str | None
+    requested_model: str | None
+    requested_reasoning_effort: str | None
+    effective_model: str | None
+    effective_provider: str | None
+    effective_reasoning_effort: str | None
+    runtime_fallback: dict[str, Any]
     usage: dict[str, int]
     error: dict[str, Any]
+
+    @property
+    def model(self) -> str | None:
+        """Compatibilidad de lectura con el estado anterior del adapter."""
+
+        return self.effective_model
 
 
 class HermesRunsAdapter:
@@ -190,8 +201,26 @@ class HermesRunsAdapter:
             raise CapabilityMissingError(missing)
         return cast(dict[str, Any], self.redact(payload))
 
-    def start_run(self, input_text: str) -> str:
-        response = self.client.post(self._url("/v1/runs"), json={"input": input_text})
+    def start_run(
+        self,
+        input_text: str,
+        *,
+        model_alias: str | None = None,
+        reasoning_effort: str | None = None,
+        instructions: str | None = None,
+        session_id: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> str:
+        headers = {"Idempotency-Key": idempotency_key} if idempotency_key else None
+        payload = {"input": input_text}
+        optional = {
+            "model": model_alias,
+            "reasoning_effort": reasoning_effort,
+            "instructions": instructions,
+            "session_id": session_id,
+        }
+        payload.update({key: value for key, value in optional.items() if value is not None})
+        response = self.client.post(self._url("/v1/runs"), json=payload, headers=headers)
         self._raise_for_response(response)
         run_id = self._json(response).get("run_id")
         if not run_id:
@@ -239,11 +268,41 @@ class HermesRunsAdapter:
         response = self.client.get(self._url(f"/v1/runs/{run_id}"))
         self._raise_for_response(response)
         payload = self.redact(self._json(response))
+        raw_fallback = payload.get("runtime_fallback") or payload.get("fallback") or {}
         return HermesRunState(
             run_id=str(payload.get("run_id") or run_id),
             status=str(payload.get("status") or "unknown"),
             output=str(payload["output"]) if payload.get("output") is not None else None,
-            model=str(payload["model"]) if payload.get("model") is not None else None,
+            requested_model=(
+                str(payload["requested_model"])
+                if payload.get("requested_model") is not None
+                else None
+            ),
+            requested_reasoning_effort=(
+                str(payload["requested_reasoning_effort"])
+                if payload.get("requested_reasoning_effort") is not None
+                else None
+            ),
+            effective_model=(
+                str(payload["effective_model"])
+                if payload.get("effective_model") is not None
+                else str(payload["model"])
+                if payload.get("model") is not None
+                else None
+            ),
+            effective_provider=(
+                str(payload["effective_provider"])
+                if payload.get("effective_provider") is not None
+                else None
+            ),
+            effective_reasoning_effort=(
+                str(payload["effective_reasoning_effort"])
+                if payload.get("effective_reasoning_effort") is not None
+                else None
+            ),
+            runtime_fallback=(
+                cast(dict[str, Any], raw_fallback) if isinstance(raw_fallback, dict) else {}
+            ),
             usage=self.normalize_usage(payload),
             error=self.normalize_error(payload),
         )

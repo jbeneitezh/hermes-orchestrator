@@ -3,6 +3,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Literal
 
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -26,6 +27,8 @@ class Settings(BaseSettings):
         "agent:developer": "developer",
         "agent:validator": "validator",
     }
+    internal_auth_tokens: dict[str, SecretStr] = {}
+    internal_auth_revoked_token_hashes: set[str] = set()
     fleet_runner_url: str = "http://fleet-reconciler:8090"
     fleet_runner_token: str = ""
     fleet_project_name: str = "hermes-tradix-f11"
@@ -38,6 +41,8 @@ class Settings(BaseSettings):
         "/host_mnt/d/Personal/hermes-tradix/tradix",
         "/host_mnt/d/Personal/hermes-tradix/hermes-agents-compose",
     ]
+    agent_provisioner_url: str = "http://agent-provisioner:8091"
+    agent_provisioner_token: str = ""
     usage_project_id: str = "tradix"
     usage_window_seconds: int = 86400
     usage_soft_token_limit: int = 5_000_000
@@ -55,9 +60,22 @@ class Settings(BaseSettings):
     operations_watchdog_state_path: str = "/var/lib/hermes-orchestrator/watchdog/state.json"
     operations_watchdog_api_url: str = "http://orchestrator-api:8080"
     operations_watchdog_actor_id: str = "agent:operator"
+    operations_watchdog_api_token: SecretStr = SecretStr("")
     operations_watchdog_check_seconds: int = 300
     operations_summary_interval_seconds: int = 9000
     operations_stale_after_seconds: int = 1800
+    run_dispatcher_id: str = "run-dispatcher"
+    run_dispatcher_batch_size: int = 1
+    run_dispatcher_poll_seconds: float = 2.0
+    run_dispatcher_lease_seconds: int = 120
+    run_dispatcher_heartbeat_seconds: float = 30.0
+    run_dispatcher_retry_seconds: int = 15
+    run_dispatcher_worker_secrets: dict[str, str] = {}
+    workflow_coordinator_id: str = "workflow-coordinator"
+    workflow_coordinator_batch_size: int = 10
+    workflow_coordinator_poll_seconds: float = 2.0
+    workflow_max_depth: int = 2
+    workflow_dispatch_timeout_seconds: int = 900
 
 
 @lru_cache

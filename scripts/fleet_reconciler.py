@@ -15,13 +15,14 @@ from pydantic import BaseModel, ConfigDict, Field
 class ReconcileCommand(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    action: Literal["plan", "apply"]
+    action: Literal["plan", "apply", "rollback"]
     services: list[str] = Field(default_factory=list)
 
 
 TOKEN = os.environ["FLEET_RECONCILER_TOKEN"]
 PROJECT = os.environ["FLEET_PROJECT_NAME"]
 COMPOSE_PATH = Path(os.environ["FLEET_COMPOSE_PATH"])
+MANAGED_COMPOSE_RAW = os.environ.get("FLEET_MANAGED_COMPOSE_PATH", "")
 ENV_PATH = Path(os.environ["FLEET_ENV_PATH"])
 ALLOWED_IMAGES = set(json.loads(os.environ["FLEET_ALLOWED_IMAGES"]))
 ALLOWED_MOUNT_ROOTS = [
@@ -37,6 +38,8 @@ BASE_COMMAND = [
     "--file",
     str(COMPOSE_PATH),
 ]
+if MANAGED_COMPOSE_RAW:
+    BASE_COMMAND.extend(["--file", MANAGED_COMPOSE_RAW])
 
 app = FastAPI(title="Hermes Fleet Reconciler", docs_url=None, redoc_url=None)
 
@@ -159,6 +162,13 @@ def reconcile(command: ReconcileCommand) -> dict[str, Any]:
         or any(service not in configured for service in command.services)
     ):
         raise HTTPException(status_code=422, detail="worker service not allowed")
+    if command.action == "rollback":
+        run_command(["stop", *command.services], timeout=300)
+        run_command(["rm", "--force", "--stop", *command.services], timeout=300)
+        return snapshot(
+            "rollback",
+            ["config", "stop <workers>", "rm --force --stop <workers>"],
+        )
     run_command(
         [
             "pull",

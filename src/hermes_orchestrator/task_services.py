@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import Select, func, select
+from sqlalchemy import Select, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from hermes_orchestrator.config import Settings
@@ -45,6 +45,16 @@ class LifecycleError(Exception):
 @dataclass(frozen=True)
 class LifecycleResult:
     value: Task | Run | Approval | TaskComment
+    replayed: bool = False
+
+
+@dataclass(frozen=True)
+class TaskHandoffResult:
+    task: Task
+    run: Run
+    comment: TaskComment
+    approval: Approval | None
+    handoff: dict[str, Any]
     replayed: bool = False
 
 
@@ -113,6 +123,131 @@ def get_run(session: Session, run_id: uuid.UUID) -> Run:
     run = session.scalar(select(Run).where(Run.id == run_id).options(selectinload(Run.approvals)))
     if run is None:
         raise LifecycleError("not_found", "Run no encontrado", 404)
+    return run
+
+
+def _locked_run(session: Session, run_id: uuid.UUID) -> Run:
+    run = session.scalar(select(Run).where(Run.id == run_id).with_for_update())
+    if run is None:
+        raise LifecycleError("not_found", "Run no encontrado", 404)
+    return run
+
+
+def _validate_lease_duration(lease_duration: timedelta) -> None:
+    if lease_duration <= timedelta(0):
+        raise LifecycleError("invalid_lease_duration", "La duración del lease debe ser positiva")
+
+
+def _require_active_lease(run: Run, *, lease_owner: str, now: datetime) -> None:
+    if run.lease_owner != lease_owner:
+        raise LifecycleError("dispatch_lease_owner_mismatch", "El Run pertenece a otro dispatcher")
+    if run.lease_expires_at is None or ensure_aware(run.lease_expires_at) <= now:
+        raise LifecycleError("dispatch_lease_expired", "El lease del Run ha caducado")
+    if run.status not in {"dispatching", "running"}:
+        raise LifecycleError("dispatch_lease_inactive", "El Run ya no admite lease")
+
+
+def _clear_run_lease(run: Run) -> None:
+    run.lease_owner = None
+    run.lease_acquired_at = None
+    run.lease_expires_at = None
+    run.heartbeat_at = None
+
+
+def claim_dispatching_runs(
+    session: Session,
+    *,
+    lease_owner: str,
+    lease_duration: timedelta,
+    limit: int = 1,
+    now: datetime | None = None,
+) -> list[Run]:
+    """Reclama Runs elegibles de forma exclusiva dentro de una transacción corta."""
+
+    if not lease_owner.strip():
+        raise LifecycleError("invalid_lease_owner", "El owner del lease es obligatorio")
+    if limit < 1:
+        raise LifecycleError("invalid_claim_limit", "El límite de claim debe ser positivo")
+    _validate_lease_duration(lease_duration)
+    effective_now = ensure_aware(now or utc_now())
+    lease_expires_at = effective_now + lease_duration
+    statement = (
+        select(Run)
+        .where(
+            Run.status.in_({"dispatching", "running"}),
+            Run.next_attempt_at <= effective_now,
+            or_(Run.lease_expires_at.is_(None), Run.lease_expires_at <= effective_now),
+        )
+        .order_by(Run.next_attempt_at, Run.created_at, Run.id)
+        .limit(limit)
+        .with_for_update(skip_locked=True)
+    )
+    claimed = list(session.scalars(statement))
+    for run in claimed:
+        run.lease_owner = lease_owner
+        run.lease_acquired_at = effective_now
+        run.lease_expires_at = lease_expires_at
+        run.heartbeat_at = effective_now
+        run.dispatch_attempts += 1
+        append_audit(
+            session,
+            actor_id=lease_owner,
+            event_type="run.claimed",
+            aggregate_type="run",
+            aggregate_id=run.id,
+            payload={
+                "dispatch_attempt": run.dispatch_attempts,
+                "lease_expires_at": lease_expires_at.isoformat(),
+            },
+        )
+    session.commit()
+    return claimed
+
+
+def heartbeat_run_lease(
+    session: Session,
+    *,
+    run_id: uuid.UUID,
+    lease_owner: str,
+    lease_duration: timedelta,
+    now: datetime | None = None,
+) -> Run:
+    """Renueva un lease vigente sin cambiar el estado funcional del Run."""
+
+    _validate_lease_duration(lease_duration)
+    effective_now = ensure_aware(now or utc_now())
+    run = _locked_run(session, run_id)
+    _require_active_lease(run, lease_owner=lease_owner, now=effective_now)
+    run.heartbeat_at = effective_now
+    run.lease_expires_at = effective_now + lease_duration
+    session.commit()
+    return run
+
+
+def release_run_lease(
+    session: Session,
+    *,
+    run_id: uuid.UUID,
+    lease_owner: str,
+    next_attempt_at: datetime,
+    now: datetime | None = None,
+) -> Run:
+    """Libera el ownership y programa el siguiente intento del mismo Run."""
+
+    effective_now = ensure_aware(now or utc_now())
+    run = _locked_run(session, run_id)
+    _require_active_lease(run, lease_owner=lease_owner, now=effective_now)
+    _clear_run_lease(run)
+    run.next_attempt_at = ensure_aware(next_attempt_at)
+    append_audit(
+        session,
+        actor_id=lease_owner,
+        event_type="run.lease_released",
+        aggregate_type="run",
+        aggregate_id=run.id,
+        payload={"next_attempt_at": run.next_attempt_at.isoformat()},
+    )
+    session.commit()
     return run
 
 
@@ -242,6 +377,7 @@ def dispatch_task(
         dispatch_idempotency_key=idempotency_key,
         dispatch_hash=dispatch_hash,
         status="awaiting_approval" if requires_approval else "dispatching",
+        next_attempt_at=effective_now,
         timeout_at=timeout_at,
     )
     session.add(run)
@@ -299,16 +435,30 @@ def transition_run(
         run.started_at = effective_now
     if new_status in TERMINAL_RUN_STATUSES:
         run.finished_at = effective_now
+        _clear_run_lease(run)
     task = get_task(session, run.task_id)
-    task.status = {
-        "dispatching": "dispatched",
-        "running": "in_progress",
-        "awaiting_approval": "awaiting_approval",
-        "completed": "completed",
-        "failed": "failed",
-        "cancelled": "cancelled",
-        "timed_out": "timed_out",
-    }[new_status]
+    handoff = run.error_details.get("agent_handoff")
+    if new_status == "completed" and isinstance(handoff, dict):
+        task.status = (
+            "blocked"
+            if handoff.get("outcome") == "blocked"
+            else "awaiting_approval"
+            if any(
+                approval.action == "completion" and approval.status == "pending"
+                for approval in run.approvals
+            )
+            else "completed"
+        )
+    else:
+        task.status = {
+            "dispatching": "dispatched",
+            "running": "in_progress",
+            "awaiting_approval": "awaiting_approval",
+            "completed": "completed",
+            "failed": "failed",
+            "cancelled": "cancelled",
+            "timed_out": "timed_out",
+        }[new_status]
     append_audit(
         session,
         actor_id=actor_id,
@@ -334,6 +484,127 @@ def transition_run(
         )
     session.commit()
     return get_run(session, run.id)
+
+
+def handoff_task(
+    session: Session,
+    *,
+    task_id: uuid.UUID,
+    actor_id: str,
+    idempotency_key: str,
+    handoff: dict[str, Any],
+    approval_ttl_seconds: int = 86400,
+    now: datetime | None = None,
+) -> TaskHandoffResult:
+    """Registra el resultado tipado del worker sin cerrar prematuramente su Run."""
+
+    existing = session.scalar(
+        select(TaskComment).where(TaskComment.idempotency_key == idempotency_key)
+    )
+    if existing is not None:
+        try:
+            persisted = json.loads(existing.body)
+            persisted_input = {key: value for key, value in persisted.items() if key != "run_id"}
+        except (json.JSONDecodeError, AttributeError):
+            persisted = {}
+            persisted_input = {}
+        if (
+            existing.task_id != task_id
+            or existing.actor_id != actor_id
+            or persisted_input != handoff
+        ):
+            raise LifecycleError("idempotency_conflict", "La clave ya se usó con otro handoff")
+        task = get_task(session, task_id)
+        run_id = persisted.get("run_id")
+        run = get_run(session, uuid.UUID(str(run_id)))
+        existing_approval = session.scalar(
+            select(Approval)
+            .where(Approval.run_id == run.id, Approval.action == "completion")
+            .order_by(Approval.created_at.desc())
+        )
+        stored_handoff = run.error_details.get("agent_handoff")
+        if not isinstance(stored_handoff, dict):
+            stored_handoff = persisted | {"comment_id": str(existing.id)}
+        return TaskHandoffResult(
+            task, run, existing, existing_approval, stored_handoff, replayed=True
+        )
+
+    task = get_task(session, task_id)
+    active_run = session.scalar(
+        select(Run)
+        .where(Run.task_id == task.id, Run.status == "running")
+        .order_by(Run.attempt_number.desc())
+    )
+    if active_run is None:
+        raise LifecycleError("active_run_not_found", "La tarea no tiene un Run activo", 409)
+    if active_run.worker_actor_id != actor_id:
+        raise LifecycleError(
+            "worker_mismatch", "Solo el worker activo puede entregar la tarea", 403
+        )
+    outcome = handoff.get("outcome")
+    if outcome not in {"blocked", "completed"}:
+        raise LifecycleError("invalid_handoff", "El resultado del handoff no es válido")
+
+    handoff = handoff | {"run_id": str(active_run.id)}
+    serialized = json.dumps(handoff, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    comment = TaskComment(
+        task_id=task.id,
+        actor_id=actor_id,
+        body=serialized,
+        idempotency_key=idempotency_key,
+    )
+    session.add(comment)
+    session.flush()
+    persisted_handoff = handoff | {"comment_id": str(comment.id)}
+    active_run.error_details = active_run.error_details | {"agent_handoff": persisted_handoff}
+
+    completion_approval: Approval | None = None
+    if outcome == "blocked":
+        task.status = "blocked"
+        event_type = "task.blocked"
+    elif task.independent_review:
+        if task.reviewer_actor_id == actor_id:
+            raise LifecycleError("self_review_denied", "El worker no puede revisar su entrega", 403)
+        effective_now = now or utc_now()
+        completion_approval = Approval(
+            run_id=active_run.id,
+            action="completion",
+            context_snapshot={
+                "task_id": str(task.id),
+                "handoff_comment_id": str(comment.id),
+                "outcome": outcome,
+            },
+            requested_by_actor_id=actor_id,
+            expires_at=effective_now + timedelta(seconds=approval_ttl_seconds),
+        )
+        session.add(completion_approval)
+        task.status = "awaiting_approval"
+        event_type = "task.completion_requested"
+    else:
+        task.status = "completed"
+        event_type = "task.completed_handoff"
+
+    append_audit(
+        session,
+        actor_id=actor_id,
+        event_type=event_type,
+        aggregate_type="task",
+        aggregate_id=task.id,
+        payload={
+            "run_id": str(active_run.id),
+            "comment_id": str(comment.id),
+            "outcome": outcome,
+            "block_type": handoff.get("block_type"),
+        },
+    )
+    session.commit()
+    return TaskHandoffResult(
+        get_task(session, task.id),
+        get_run(session, active_run.id),
+        comment,
+        completion_approval,
+        persisted_handoff,
+    )
 
 
 def add_comment(
@@ -402,6 +673,7 @@ def cancel_task(
         run.error_code = "cancelled"
         run.summary = reason
         run.finished_at = effective_now
+        _clear_run_lease(run)
         ingest_run_usage(
             session,
             run,
@@ -452,18 +724,24 @@ def resolve_approval(
         raise LifecycleError("self_review_denied", "El ejecutor no puede aprobar su run", 403)
     if task.independent_review and actor_id != task.reviewer_actor_id:
         raise LifecycleError("reviewer_mismatch", "Solo el reviewer asignado puede decidir", 403)
+    is_completion_approval = approval.action == "completion"
+    if is_completion_approval and run.status != "completed":
+        raise LifecycleError("handoff_not_terminal", "El Run todavía no ha terminado")
     if ensure_aware(approval.expires_at) <= effective_now:
         approval.status = "expired"
-        run.status = "failed"
-        run.error_code = "approval_expired"
-        run.finished_at = effective_now
+        if not is_completion_approval:
+            run.status = "failed"
+            run.error_code = "approval_expired"
+            run.finished_at = effective_now
+            _clear_run_lease(run)
         task.status = "failed"
-        ingest_run_usage(
-            session,
-            run,
-            settings=settings or Settings(),
-            actor_id="system:watchdog",
-        )
+        if not is_completion_approval:
+            ingest_run_usage(
+                session,
+                run,
+                settings=settings or Settings(),
+                actor_id="system:watchdog",
+            )
         append_audit(
             session,
             actor_id="system:watchdog",
@@ -480,13 +758,19 @@ def resolve_approval(
     approval.decision_reason = reason
     approval.decision_idempotency_key = idempotency_key
     approval.decided_at = effective_now
-    if decision == "approved":
+    if is_completion_approval and decision == "approved":
+        task.status = "completed"
+    elif is_completion_approval:
+        task.status = "failed"
+    elif decision == "approved":
         run.status = "dispatching"
+        run.next_attempt_at = effective_now
         task.status = "dispatched"
     else:
         run.status = "failed"
         run.error_code = "approval_rejected"
         run.finished_at = effective_now
+        _clear_run_lease(run)
         task.status = "failed"
         ingest_run_usage(
             session,
@@ -524,6 +808,7 @@ def expire_due_runs(
         run.status = "timed_out"
         run.error_code = "timeout"
         run.finished_at = effective_now
+        _clear_run_lease(run)
         task = get_task(session, run.task_id)
         task.status = "timed_out"
         append_audit(

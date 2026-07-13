@@ -14,6 +14,8 @@ class FleetRunner(Protocol):
 
     def apply(self, services: list[str]) -> dict[str, Any]: ...
 
+    def rollback(self, services: list[str]) -> dict[str, Any]: ...
+
 
 class HttpFleetRunnerClient:
     def __init__(self, settings: Settings) -> None:
@@ -52,4 +54,11 @@ class HttpFleetRunnerClient:
             "POST",
             "/v1/internal/reconcile",
             {"action": "apply", "services": services},
+        )
+
+    def rollback(self, services: list[str]) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            "/v1/internal/reconcile",
+            {"action": "rollback", "services": services},
         )

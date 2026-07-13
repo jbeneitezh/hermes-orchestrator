@@ -17,15 +17,19 @@ class OperationsReader(Protocol):
 
 
 class PublicOperationsApiReader:
-    def __init__(self, base_url: str, actor_id: str) -> None:
+    def __init__(self, base_url: str, actor_id: str, api_token: str) -> None:
         self.base_url = base_url.rstrip("/")
         self.actor_id = actor_id
+        self.api_token = api_token
 
     def get(self, path: str, query: dict[str, str] | None = None) -> dict[str, Any]:
         suffix = f"?{urllib.parse.urlencode(query)}" if query else ""
         request = urllib.request.Request(
             f"{self.base_url}{path}{suffix}",
-            headers={"X-Actor-Id": self.actor_id},
+            headers={
+                "Authorization": f"Bearer {self.api_token}",
+                "X-Actor-Id": self.actor_id,
+            },
         )
         with urllib.request.urlopen(request, timeout=20) as response:
             payload = json.loads(response.read())
@@ -96,6 +100,7 @@ def evaluate_watchdog(
     path = Path(state_path)
     state = _load_state(path)
     tasks = reader.get("/v1/operations/tasks", {"active_only": "true", "limit": "200"})
+    autonomy = reader.get("/v1/operations/autonomy", {"limit": "200"})
     query = {"limit": "200"}
     previous_cursor = state.get("last_cursor")
     if isinstance(previous_cursor, str) and previous_cursor:
@@ -104,16 +109,30 @@ def evaluate_watchdog(
     active_count = int(tasks.get("active_count", 0))
     stale_count = int(tasks.get("stale_count", 0))
     new_event_count = int(timeline.get("count", 0))
-    has_work = active_count > 0
+    dispatcher = autonomy.get("dispatcher", {})
+    continuations = autonomy.get("continuations", {})
+    routing = autonomy.get("routing", {})
+    queued_runs = int(dispatcher.get("queued", 0))
+    claimed_runs = int(dispatcher.get("claimed", 0))
+    expired_leases = int(dispatcher.get("expired_leases", 0))
+    pending_continuations = int(continuations.get("pending", 0))
+    fallback_count = int(routing.get("fallbacks", 0))
+    has_work = active_count > 0 or queued_runs > 0 or claimed_runs > 0 or pending_continuations > 0
     has_new_events = new_event_count > 0
     due = _summary_due(state, effective_now, summary_interval_seconds)
     summary_emitted = has_work and has_new_events and due
 
     state["checked_at"] = effective_now.isoformat()
+    state.pop("last_error", None)
     state["last_cursor"] = timeline.get("next_cursor") or previous_cursor
     state["active_tasks"] = active_count
     state["stale_tasks"] = stale_count
     state["new_events"] = new_event_count
+    state["queued_runs"] = queued_runs
+    state["claimed_runs"] = claimed_runs
+    state["expired_leases"] = expired_leases
+    state["pending_continuations"] = pending_continuations
+    state["fallback_count"] = fallback_count
     state["model_calls"] = 0
     state["status"] = "active" if has_work else "idle"
     state["summary_emitted"] = summary_emitted
@@ -128,6 +147,11 @@ def evaluate_watchdog(
             "active_tasks": active_count,
             "stale_tasks": stale_count,
             "new_events": new_event_count,
+            "queued_runs": queued_runs,
+            "claimed_runs": claimed_runs,
+            "expired_leases": expired_leases,
+            "pending_continuations": pending_continuations,
+            "fallback_count": fallback_count,
             "generated_at": effective_now.isoformat(),
             "model_calls": 0,
         }
@@ -158,6 +182,7 @@ def main() -> None:
     reader = PublicOperationsApiReader(
         settings.operations_watchdog_api_url,
         settings.operations_watchdog_actor_id,
+        settings.operations_watchdog_api_token.get_secret_value(),
     )
     while True:
         try:

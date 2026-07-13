@@ -10,6 +10,7 @@ from sqlalchemy.engine import Engine
 
 from hermes_orchestrator import __version__
 from hermes_orchestrator.api import build_catalog_router
+from hermes_orchestrator.auth import InternalAuthMiddleware
 from hermes_orchestrator.config import Settings, get_settings
 from hermes_orchestrator.database import (
     create_database_engine,
@@ -21,13 +22,18 @@ from hermes_orchestrator.fleet_api import build_fleet_router
 from hermes_orchestrator.fleet_runner import FleetRunner, HttpFleetRunnerClient
 from hermes_orchestrator.mcp_server import build_mcp_server
 from hermes_orchestrator.operations_api import build_operations_router
+from hermes_orchestrator.provisioning import AgentProvisioner, HttpAgentProvisionerClient
+from hermes_orchestrator.provisioning_api import build_provisioning_router
 from hermes_orchestrator.schemas import CapabilitiesResponse, HealthResponse
 from hermes_orchestrator.task_api import build_task_router
 from hermes_orchestrator.usage_api import build_usage_router
 
 
 def create_app(
-    settings: Settings | None = None, *, fleet_runner: FleetRunner | None = None
+    settings: Settings | None = None,
+    *,
+    fleet_runner: FleetRunner | None = None,
+    agent_provisioner: AgentProvisioner | None = None,
 ) -> FastAPI:
     resolved_settings = settings or get_settings()
     engine = create_database_engine(resolved_settings.database_url)
@@ -47,11 +53,18 @@ def create_app(
     )
     app.state.engine = engine
     app.state.session_factory = session_factory
+    app.add_middleware(
+        InternalAuthMiddleware,
+        settings=resolved_settings,
+        session_factory=session_factory,
+    )
     app.include_router(build_catalog_router(resolved_settings))
     app.include_router(build_task_router(resolved_settings))
     app.include_router(build_usage_router(resolved_settings))
     app.include_router(build_environment_router(resolved_settings))
     effective_runner = fleet_runner or HttpFleetRunnerClient(resolved_settings)
+    effective_provisioner = agent_provisioner or HttpAgentProvisionerClient(resolved_settings)
+    app.include_router(build_provisioning_router(resolved_settings, effective_provisioner))
     app.include_router(build_operations_router(resolved_settings, effective_runner))
     app.include_router(
         build_fleet_router(
@@ -96,6 +109,8 @@ def create_app(
                 "postgresql",
                 "alembic",
                 "agent_catalog",
+                "agent_request_lifecycle",
+                "managed_agent_provisioning",
                 "execution_profiles",
                 "deny_by_default_policy",
                 "append_only_audit",
@@ -118,8 +133,11 @@ def create_app(
                 "local_ttl_port_allocation",
                 "environment_rollback",
                 "operations_dashboard",
+                "autonomy_operations_projection",
+                "provisioning_operations_projection",
                 "reconnectable_timeline",
                 "process_watchdog_no_llm",
+                "bearer_internal_auth",
             ],
         )
 

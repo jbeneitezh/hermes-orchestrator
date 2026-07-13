@@ -164,7 +164,7 @@ OPERATIONS_DASHBOARD_HTML = r"""<!doctype html>
     document.querySelector('#timeline-counter').textContent = `${data.count} eventos · cursor ${state.cursor ? 'activo' : 'vacío'}`;
     document.querySelector('#timeline').innerHTML = data.items.length ? [...data.items].reverse().slice(0,12).map(e => `<article class="event"><time>${time(e.created_at)}</time><div><b>${esc(e.event_type)}</b><p>${esc(e.aggregate_type)} / ${short(e.aggregate_id)}</p></div></article>`).join('') : '<div class="empty">Sin eventos nuevos.</div>';
   }
-  function renderGovernance(approvals, quota) {
+  function renderGovernance(approvals, quota, autonomy, provisioning) {
     document.querySelector('#metric-approvals').textContent = approvals.pending_count;
     document.querySelector('#approval-box').dataset.alert = approvals.pending_count > 0;
     const wd = quota.watchdog || {};
@@ -172,7 +172,11 @@ OPERATIONS_DASHBOARD_HTML = r"""<!doctype html>
     const pending = approvals.items.filter(a => a.status === 'pending').slice(0,3);
     const circuitOpen = quota.circuits.filter(c => c.state === 'open').length;
     const quotaBlocked = quota.quota.length;
+    const dispatcher = autonomy.dispatcher || {};
+    const continuations = autonomy.continuations || {};
     document.querySelector('#governance').innerHTML = [
+      `<div class="notice ${dispatcher.expired_leases?'alert':''}"><h3>Autonomía</h3><p>${dispatcher.queued ?? 0} queued · ${dispatcher.claimed ?? 0} claimed · ${dispatcher.expired_leases ?? 0} leases expirados</p></div>`,
+      `<div class="notice ${(continuations.pending || provisioning.failed_count)?'alert':''}"><h3>Continuaciones / provisioning</h3><p>${continuations.pending ?? 0} continuaciones pending · ${provisioning.pending_count ?? 0} requests pending · ${provisioning.failed_count ?? 0} fallos</p></div>`,
       `<div class="notice ${pending.length?'alert':''}"><h3>Approval queue</h3><p>${pending.length ? pending.map(a => esc(a.objective)).join(' · ') : 'Sin decisiones pendientes'}</p></div>`,
       `<div class="notice ${circuitOpen?'alert':''}"><h3>Circuitos</h3><p>${circuitOpen} abiertos / ${quota.circuits.length} registrados</p></div>`,
       `<div class="notice ${quotaBlocked?'alert':''}"><h3>Cuota</h3><p>${quotaBlocked ? quotaBlocked+' agotamientos activos' : 'Disponible según ledger'}</p></div>`,
@@ -182,15 +186,15 @@ OPERATIONS_DASHBOARD_HTML = r"""<!doctype html>
   async function refresh() {
     const status = document.querySelector('#task-status').value;
     const group = document.querySelector('#usage-group').value;
-    document.querySelector('#refresh-meta').textContent = 'Leyendo seis rutas…';
+    document.querySelector('#refresh-meta').textContent = 'Leyendo ocho rutas…';
     try {
-      const [fleet,tasks,timeline,usage,approvals,quota] = await Promise.all([
-        get('/v1/operations/fleet'), get('/v1/operations/tasks?active_only=false'+(status?'&status='+encodeURIComponent(status):'')), get('/v1/operations/timeline?limit=80'), get('/v1/operations/usage?group_by='+group), get('/v1/operations/approvals'), get('/v1/operations/quota')
+      const [fleet,tasks,timeline,usage,approvals,quota,autonomy,provisioning] = await Promise.all([
+        get('/v1/operations/fleet'), get('/v1/operations/tasks?active_only=false'+(status?'&status='+encodeURIComponent(status):'')), get('/v1/operations/timeline?limit=80'), get('/v1/operations/usage?group_by='+group), get('/v1/operations/approvals'), get('/v1/operations/quota'), get('/v1/operations/autonomy?limit=80'), get('/v1/operations/provisioning?limit=80')
       ]);
       document.querySelector('#fleet-status').textContent = fleet.status;
       document.querySelector('#metric-fleet').textContent = `${fleet.service_count-fleet.unhealthy_count}/${fleet.service_count}`;
       document.querySelector('#clock').textContent = new Date().toLocaleString('es-ES');
-      renderTasks(tasks); renderTimeline(timeline); renderUsage(usage); renderGovernance(approvals, quota);
+      renderTasks(tasks); renderTimeline(timeline); renderUsage(usage); renderGovernance(approvals, quota, autonomy, provisioning);
       document.querySelector('#refresh-meta').textContent = `Actualizado ${new Date().toLocaleTimeString('es-ES')} · sin llamada de modelo`;
     } catch (error) {
       document.querySelector('#refresh-meta').textContent = 'Error de lectura: '+error.message;
