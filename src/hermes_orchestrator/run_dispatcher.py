@@ -24,6 +24,7 @@ from hermes_orchestrator.hermes_adapter import (
 from hermes_orchestrator.hermes_execution import (
     finalize_run_from_worker_state,
     persist_worker_events,
+    prepare_requested_runtime,
 )
 from hermes_orchestrator.models import Agent, AgentInstance, Task
 from hermes_orchestrator.task_services import (
@@ -230,6 +231,11 @@ class RunDispatcher:
                     )
                 target = self.resolver.resolve(session, run.worker_actor_id)
                 input_text = build_run_input(task)
+                requested_runtime = prepare_requested_runtime(
+                    session,
+                    run=run,
+                    task=task,
+                )
                 worker_run_id = run.worker_run_id
                 dispatch_idempotency_key = run.dispatch_idempotency_key
 
@@ -238,7 +244,12 @@ class RunDispatcher:
                 keeper.renew()
                 if worker_run_id is None:
                     worker_run_id = adapter.start_run(
-                        input_text, idempotency_key=dispatch_idempotency_key
+                        input_text,
+                        model_alias=str(requested_runtime["model_alias"]),
+                        reasoning_effort=str(requested_runtime["reasoning_effort"]),
+                        instructions=str(requested_runtime["instructions"]),
+                        session_id=str(requested_runtime["session_id"]),
+                        idempotency_key=dispatch_idempotency_key,
                     )
                     keeper.renew()
                     with self.session_factory() as session:

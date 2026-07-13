@@ -200,6 +200,9 @@ class RunResponse(BaseModel):
     error_code: str | None
     summary: str | None
     worker_run_id: str | None
+    requested_runtime: dict[str, Any]
+    observed_runtime: dict[str, Any]
+    runtime_fallback: dict[str, Any]
     usage_snapshot: dict[str, Any]
     error_details: dict[str, Any]
     approvals: list[ApprovalResponse]
@@ -358,9 +361,13 @@ class UsageDetailResponse(BaseModel):
     executing_agent_id: str
     requested_profile: str
     effective_profile: str | None
+    requested_model: str | None
+    requested_provider: str | None
+    requested_reasoning_effort: str | None
     model: str | None
     provider: str | None
     reasoning_effort: str | None
+    runtime_fallback: dict[str, Any]
     input_tokens: int | None
     output_tokens: int | None
     reasoning_tokens: int | None

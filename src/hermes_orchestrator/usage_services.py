@@ -121,9 +121,13 @@ def ingest_run_usage(
     if task is None:
         raise ControlViolation("not_found", "La tarea del run no existe", status_code=404)
     profile_id = run.effective_profile_id or run.requested_profile_id
+    requested_profile = session.get(ExecutionProfile, run.requested_profile_id)
     profile = session.get(ExecutionProfile, profile_id)
     usage = run.usage_snapshot if isinstance(run.usage_snapshot, dict) else {}
     details = run.error_details if isinstance(run.error_details, dict) else {}
+    requested_runtime = run.requested_runtime if isinstance(run.requested_runtime, dict) else {}
+    observed_runtime = run.observed_runtime if isinstance(run.observed_runtime, dict) else {}
+    runtime_fallback = run.runtime_fallback if isinstance(run.runtime_fallback, dict) else {}
     effective_now = run.finished_at or utc_now()
     quota_exhausted = run.error_code in {"quota_exhausted", "rate_limited"}
     actual_cost = _decimal(usage.get("actual_cost"))
@@ -138,6 +142,9 @@ def ingest_run_usage(
         "error_details": details,
         "status": run.status,
         "effective_profile": profile_id,
+        "requested_runtime": requested_runtime,
+        "observed_runtime": observed_runtime,
+        "runtime_fallback": runtime_fallback,
     }
     payload_hash = _stable_hash(payload)
     existing = session.scalar(select(UsageLedger).where(UsageLedger.run_id == run.id))
@@ -169,9 +176,28 @@ def ingest_run_usage(
         executing_agent_id=run.worker_actor_id,
         requested_profile=run.requested_profile_id,
         effective_profile=run.effective_profile_id,
-        model=profile.model if profile is not None else None,
-        provider=profile.provider if profile is not None else None,
-        reasoning_effort=profile.reasoning_effort if profile is not None else None,
+        requested_model=str(
+            requested_runtime.get("model")
+            or (requested_profile.model if requested_profile is not None else "")
+        )
+        or None,
+        requested_provider=str(
+            requested_runtime.get("provider")
+            or (requested_profile.provider if requested_profile is not None else "")
+        )
+        or None,
+        requested_reasoning_effort=str(
+            requested_runtime.get("reasoning_effort")
+            or (requested_profile.reasoning_effort if requested_profile is not None else "")
+        )
+        or None,
+        model=str(observed_runtime.get("model") or "")
+        or (profile.model if profile is not None else None),
+        provider=str(observed_runtime.get("provider") or "")
+        or (profile.provider if profile is not None else None),
+        reasoning_effort=str(observed_runtime.get("reasoning_effort") or "")
+        or (profile.reasoning_effort if profile is not None else None),
+        runtime_fallback=runtime_fallback,
         input_tokens=_integer(usage.get("input_tokens")),
         output_tokens=_integer(usage.get("output_tokens")),
         reasoning_tokens=_integer(usage.get("reasoning_tokens")),

@@ -204,6 +204,9 @@ def _run_summary(run: Run) -> dict[str, Any]:
         "status": run.status,
         "summary": run.summary,
         "error_code": run.error_code,
+        "requested_runtime": run.requested_runtime,
+        "observed_runtime": run.observed_runtime,
+        "runtime_fallback": run.runtime_fallback,
         "usage": run.usage_snapshot,
     }
 
