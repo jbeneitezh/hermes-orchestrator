@@ -14,17 +14,70 @@ class Permission(StrEnum):
     AGENTS_READ = "agents:read"
     AGENTS_REQUEST = "agents:request"
     PROFILES_READ = "profiles:read"
+    TASKS_READ = "tasks:read"
+    TASKS_CREATE = "tasks:create"
+    TASKS_DISPATCH = "tasks:dispatch"
+    TASKS_COMMENT = "tasks:comment"
+    TASKS_CANCEL = "tasks:cancel"
+    RUNS_READ = "runs:read"
+    APPROVALS_DECIDE = "approvals:decide"
 
 
 ROLE_PERMISSIONS: dict[str, frozenset[Permission]] = {
     "owner": frozenset(Permission),
     "leader": frozenset(
-        {Permission.AGENTS_READ, Permission.AGENTS_REQUEST, Permission.PROFILES_READ}
+        {
+            Permission.AGENTS_READ,
+            Permission.AGENTS_REQUEST,
+            Permission.PROFILES_READ,
+            Permission.TASKS_READ,
+            Permission.TASKS_CREATE,
+            Permission.TASKS_DISPATCH,
+            Permission.TASKS_COMMENT,
+            Permission.TASKS_CANCEL,
+            Permission.RUNS_READ,
+            Permission.APPROVALS_DECIDE,
+        }
     ),
-    "operator": frozenset({Permission.AGENTS_READ, Permission.PROFILES_READ}),
-    "researcher": frozenset({Permission.AGENTS_READ, Permission.PROFILES_READ}),
-    "developer": frozenset({Permission.AGENTS_READ, Permission.PROFILES_READ}),
-    "validator": frozenset({Permission.AGENTS_READ, Permission.PROFILES_READ}),
+    "operator": frozenset(
+        {
+            Permission.AGENTS_READ,
+            Permission.PROFILES_READ,
+            Permission.TASKS_READ,
+            Permission.TASKS_CANCEL,
+            Permission.RUNS_READ,
+        }
+    ),
+    "researcher": frozenset(
+        {
+            Permission.AGENTS_READ,
+            Permission.PROFILES_READ,
+            Permission.TASKS_READ,
+            Permission.TASKS_CREATE,
+            Permission.TASKS_COMMENT,
+            Permission.RUNS_READ,
+        }
+    ),
+    "developer": frozenset(
+        {
+            Permission.AGENTS_READ,
+            Permission.PROFILES_READ,
+            Permission.TASKS_READ,
+            Permission.TASKS_CREATE,
+            Permission.TASKS_COMMENT,
+            Permission.RUNS_READ,
+        }
+    ),
+    "validator": frozenset(
+        {
+            Permission.AGENTS_READ,
+            Permission.PROFILES_READ,
+            Permission.TASKS_READ,
+            Permission.TASKS_COMMENT,
+            Permission.RUNS_READ,
+            Permission.APPROVALS_DECIDE,
+        }
+    ),
 }
 
 

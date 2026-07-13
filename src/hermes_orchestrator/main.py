@@ -17,6 +17,7 @@ from hermes_orchestrator.database import (
     database_is_ready,
 )
 from hermes_orchestrator.schemas import CapabilitiesResponse, HealthResponse
+from hermes_orchestrator.task_api import build_task_router
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -37,6 +38,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.engine = engine
     app.state.session_factory = session_factory
     app.include_router(build_catalog_router(resolved_settings))
+    app.include_router(build_task_router(resolved_settings))
 
     @app.get(
         "/health",
@@ -76,6 +78,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "execution_profiles",
                 "deny_by_default_policy",
                 "append_only_audit",
+                "task_run_lifecycle",
+                "independent_review",
+                "approvals",
             ],
         )
 

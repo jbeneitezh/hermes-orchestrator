@@ -25,6 +25,9 @@ La API queda disponible en `http://localhost:8080`:
 - `GET /v1/agents` y `GET /v1/agents/{id}`: catálogo observado.
 - `POST /v1/agents/requests`: solicitud idempotente de alta; no crea contenedores.
 - `GET /v1/execution-profiles`: perfiles efectivos permitidos.
+- `POST /v1/tasks`, `GET /v1/tasks/{id}`: objetivo durable separado de sus intentos.
+- `POST /v1/tasks/{id}/dispatch|comments|cancel`: comandos idempotentes del ciclo.
+- `GET /v1/runs/{id}`, `POST /v1/runs/{id}/approval`: intento y gate revisable.
 - `GET /docs`: OpenAPI interactivo generado por FastAPI.
 
 ## Calidad

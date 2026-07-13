@@ -21,6 +21,10 @@ class Settings(BaseSettings):
     actor_roles: dict[str, str] = {
         "user:owner": "owner",
         "agent:leader": "leader",
+        "agent:operator": "operator",
+        "agent:researcher": "researcher",
+        "agent:developer": "developer",
+        "agent:validator": "validator",
     }
 
 

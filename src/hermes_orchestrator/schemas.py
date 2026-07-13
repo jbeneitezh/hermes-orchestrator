@@ -133,3 +133,133 @@ class ErrorEnvelope(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     detail: ErrorResponse
+
+
+class TaskCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    objective: str = Field(min_length=1, max_length=4000)
+    acceptance_criteria: list[str] = Field(min_length=1)
+    assignee_actor_id: str | None = None
+    reviewer_actor_id: str | None = None
+    independent_review: bool = False
+    priority: int = Field(default=50, ge=0, le=100)
+    parent_task_id: uuid.UUID | None = None
+    workflow_ref: str | None = None
+    dependency_ids: list[uuid.UUID] = Field(default_factory=list)
+    budget: dict[str, Any] = Field(default_factory=dict)
+    references: list[str] = Field(default_factory=list)
+    deadline_at: datetime | None = None
+
+    @model_validator(mode="after")
+    def require_independent_reviewer(self) -> TaskCreate:
+        if self.independent_review:
+            if self.reviewer_actor_id is None:
+                raise ValueError("Una tarea con revisión independiente exige reviewer")
+            if self.assignee_actor_id == self.reviewer_actor_id:
+                raise ValueError("El reviewer debe ser distinto del assignee")
+        return self
+
+
+class TaskCommentResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", from_attributes=True)
+
+    id: uuid.UUID
+    actor_id: str
+    body: str
+    created_at: datetime
+
+
+class ApprovalResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", from_attributes=True)
+
+    id: uuid.UUID
+    action: str
+    status: str
+    expires_at: datetime
+    decided_by_actor_id: str | None
+    decision_reason: str | None
+    decided_at: datetime | None
+
+
+class RunResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", from_attributes=True)
+
+    id: uuid.UUID
+    task_id: uuid.UUID
+    operation_id: uuid.UUID
+    attempt_number: int
+    worker_actor_id: str
+    requested_profile_id: str
+    effective_profile_id: str | None
+    status: str
+    timeout_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+    error_code: str | None
+    summary: str | None
+    approvals: list[ApprovalResponse]
+    created_at: datetime
+
+
+class TaskResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", from_attributes=True)
+
+    id: uuid.UUID
+    operation_id: uuid.UUID
+    parent_task_id: uuid.UUID | None
+    workflow_ref: str | None
+    requester_actor_id: str
+    assignee_actor_id: str | None
+    reviewer_actor_id: str | None
+    priority: int
+    status: str
+    objective: str
+    acceptance_criteria: list[str]
+    budget: dict[str, Any]
+    references: list[str]
+    independent_review: bool
+    deadline_at: datetime | None
+    runs: list[RunResponse]
+    comments: list[TaskCommentResponse]
+    dependency_ids: list[uuid.UUID] = Field(default_factory=list)
+    replayed: bool = False
+    created_at: datetime
+    updated_at: datetime
+
+
+class DispatchCommand(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    worker_actor_id: str
+    requested_profile_id: str
+    timeout_seconds: int = Field(default=900, ge=1, le=86400)
+    requires_approval: bool = False
+    approval_action: str = "dispatch"
+    approval_ttl_seconds: int = Field(default=900, ge=1, le=86400)
+
+
+class DispatchResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    run: RunResponse
+    replayed: bool = False
+
+
+class TaskCommentCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    body: str = Field(min_length=1, max_length=10000)
+
+
+class CancelCommand(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(min_length=1, max_length=2000)
+
+
+class ApprovalDecision(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    decision: Literal["approved", "rejected"]
+    reason: str = Field(min_length=1, max_length=2000)

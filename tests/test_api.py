@@ -53,6 +53,9 @@ def test_capabilities_publish_only_bootstrap_features(monkeypatch) -> None:
             "execution_profiles",
             "deny_by_default_policy",
             "append_only_audit",
+            "task_run_lifecycle",
+            "independent_review",
+            "approvals",
         ],
     }
 
@@ -69,6 +72,13 @@ def test_openapi_contains_the_bootstrap_and_catalog_routes(monkeypatch) -> None:
         "/v1/agents/requests",
         "/v1/agents/{agent_id}",
         "/v1/execution-profiles",
+        "/v1/tasks",
+        "/v1/tasks/{task_id}",
+        "/v1/tasks/{task_id}/dispatch",
+        "/v1/tasks/{task_id}/comments",
+        "/v1/tasks/{task_id}/cancel",
+        "/v1/runs/{run_id}",
+        "/v1/runs/{run_id}/approval",
     }
 
 
