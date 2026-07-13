@@ -164,7 +164,7 @@ def claim_dispatching_runs(
     statement = (
         select(Run)
         .where(
-            Run.status == "dispatching",
+            Run.status.in_({"dispatching", "running"}),
             Run.next_attempt_at <= effective_now,
             or_(Run.lease_expires_at.is_(None), Run.lease_expires_at <= effective_now),
         )

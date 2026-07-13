@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -23,6 +24,10 @@ class FakeHermesState:
     event_requests: int = 0
     last_event_ids: list[str | None] = field(default_factory=list)
     status: str = "completed"
+    start_requests: int = 0
+    status_requests: int = 0
+    idempotency_keys: list[str | None] = field(default_factory=list)
+    on_start: Callable[[], None] | None = None
 
 
 class FakeHermesServer:
@@ -71,6 +76,7 @@ class FakeHermesServer:
                     self.send_json(200, {"features": state.features})
                     return
                 if self.path == "/v1/runs/fake-run":
+                    state.status_requests += 1
                     error = (
                         {"code": "provider_failed", "message": "Proveedor rechazó la petición"}
                         if state.status == "failed"
@@ -99,6 +105,10 @@ class FakeHermesServer:
                     self.wfile.flush()
                     if state.scenario == "reconnect" and state.event_requests == 1:
                         return
+                    if state.scenario == "disconnect":
+                        return
+                    if state.scenario == "active_then_completed":
+                        state.status = "completed"
                     terminal = "run.failed" if state.status == "failed" else "run.completed"
                     terminal_frame = (
                         f'id: 2\nevent: {terminal}\ndata: {{"status":"{state.status}"}}\n\n'
@@ -110,6 +120,10 @@ class FakeHermesServer:
 
             def do_POST(self) -> None:
                 if self.path == "/v1/runs":
+                    state.start_requests += 1
+                    state.idempotency_keys.append(self.headers.get("Idempotency-Key"))
+                    if state.on_start is not None:
+                        state.on_start()
                     self.send_json(202, {"run_id": "fake-run"})
                     return
                 if self.path == "/v1/runs/fake-run/stop":

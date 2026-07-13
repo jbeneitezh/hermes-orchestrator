@@ -190,8 +190,11 @@ class HermesRunsAdapter:
             raise CapabilityMissingError(missing)
         return cast(dict[str, Any], self.redact(payload))
 
-    def start_run(self, input_text: str) -> str:
-        response = self.client.post(self._url("/v1/runs"), json={"input": input_text})
+    def start_run(self, input_text: str, *, idempotency_key: str | None = None) -> str:
+        headers = {"Idempotency-Key": idempotency_key} if idempotency_key else None
+        response = self.client.post(
+            self._url("/v1/runs"), json={"input": input_text}, headers=headers
+        )
         self._raise_for_response(response)
         run_id = self._json(response).get("run_id")
         if not run_id:

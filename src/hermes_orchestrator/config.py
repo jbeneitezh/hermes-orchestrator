@@ -58,6 +58,13 @@ class Settings(BaseSettings):
     operations_watchdog_check_seconds: int = 300
     operations_summary_interval_seconds: int = 9000
     operations_stale_after_seconds: int = 1800
+    run_dispatcher_id: str = "run-dispatcher"
+    run_dispatcher_batch_size: int = 1
+    run_dispatcher_poll_seconds: float = 2.0
+    run_dispatcher_lease_seconds: int = 120
+    run_dispatcher_heartbeat_seconds: float = 30.0
+    run_dispatcher_retry_seconds: int = 15
+    run_dispatcher_worker_secrets: dict[str, str] = {}
 
 
 @lru_cache
