@@ -353,8 +353,9 @@ class ManagedAgentRenderer:
                 + "\n",
                 encoding="utf-8",
             )
-            with suppress(OSError):
-                runtime_path.chmod(0o600)
+        with suppress(OSError):
+            os.chown(runtime_path, -1, 0)
+            runtime_path.chmod(0o640)
 
     def apply(self, payload: ProvisioningPayload, fleet: FleetManagedRunner) -> ProvisionerResult:
         self.managed_root.mkdir(parents=True, exist_ok=True)
