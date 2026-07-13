@@ -26,6 +26,18 @@ class Settings(BaseSettings):
         "agent:developer": "developer",
         "agent:validator": "validator",
     }
+    fleet_runner_url: str = "http://fleet-reconciler:8090"
+    fleet_runner_token: str = ""
+    fleet_project_name: str = "hermes-tradix-f11"
+    fleet_compose_path: str = (
+        "/host_mnt/d/Personal/hermes-tradix/hermes-agents-compose/compose.yaml"
+    )
+    fleet_allowed_worker_image: str = "hermes-tradix-worker:f10"
+    fleet_allowed_mount_roots: list[str] = [
+        "/host_mnt/d/Personal/hermes-tradix/hermes-agents-data",
+        "/host_mnt/d/Personal/hermes-tradix/tradix",
+        "/host_mnt/d/Personal/hermes-tradix/hermes-agents-compose",
+    ]
 
 
 @lru_cache

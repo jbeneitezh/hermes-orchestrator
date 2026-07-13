@@ -16,12 +16,16 @@ from hermes_orchestrator.database import (
     create_session_factory,
     database_is_ready,
 )
+from hermes_orchestrator.fleet_api import build_fleet_router
+from hermes_orchestrator.fleet_runner import FleetRunner, HttpFleetRunnerClient
 from hermes_orchestrator.mcp_server import build_mcp_server
 from hermes_orchestrator.schemas import CapabilitiesResponse, HealthResponse
 from hermes_orchestrator.task_api import build_task_router
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+def create_app(
+    settings: Settings | None = None, *, fleet_runner: FleetRunner | None = None
+) -> FastAPI:
     resolved_settings = settings or get_settings()
     engine = create_database_engine(resolved_settings.database_url)
     session_factory = create_session_factory(engine)
@@ -42,6 +46,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.session_factory = session_factory
     app.include_router(build_catalog_router(resolved_settings))
     app.include_router(build_task_router(resolved_settings))
+    app.include_router(
+        build_fleet_router(
+            resolved_settings,
+            fleet_runner or HttpFleetRunnerClient(resolved_settings),
+        )
+    )
     app.mount("/mcp", mcp_manager.handle_request)
 
     @app.get(
@@ -89,6 +99,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "run_events",
                 "mcp_streamable_http",
                 "mcp_governed_tools",
+                "fleet_status",
+                "fleet_reconcile_request",
+                "fleet_allowlisted_runner",
             ],
         )
 

@@ -121,6 +121,31 @@ class AuditEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
+class FleetReconcileRecord(Base):
+    __tablename__ = "fleet_reconcile_records"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    idempotency_key: Mapped[str] = mapped_column(String(160), unique=True, index=True)
+    request_hash: Mapped[str] = mapped_column(String(64))
+    requested_by_actor_id: Mapped[str] = mapped_column(String(160), index=True)
+    project_name: Mapped[str] = mapped_column(String(120), index=True)
+    compose_path: Mapped[str] = mapped_column(String(500))
+    mode: Mapped[str] = mapped_column(String(20))
+    request_payload: Mapped[dict[str, Any]] = mapped_column(JSON)
+    desired_hash: Mapped[str] = mapped_column(String(64), index=True)
+    diff_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    risk: Mapped[str] = mapped_column(String(20))
+    status: Mapped[str] = mapped_column(String(30), index=True)
+    approval_actor_id: Mapped[str | None] = mapped_column(String(160))
+    approval_reason: Mapped[str | None] = mapped_column(Text)
+    runner_result: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    rollback_payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+
+
 class Task(Base):
     __tablename__ = "tasks"
     __table_args__ = (

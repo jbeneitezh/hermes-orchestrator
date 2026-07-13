@@ -278,3 +278,66 @@ class ApprovalDecision(BaseModel):
 
     decision: Literal["approved", "rejected"]
     reason: str = Field(min_length=1, max_length=2000)
+
+
+class FleetMountSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source: str = Field(min_length=1, max_length=500)
+    target: str = Field(min_length=1, max_length=500)
+    read_only: bool = True
+
+
+class FleetServiceSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{1,79}$")
+    image: str = Field(min_length=1, max_length=200)
+    mounts: list[FleetMountSpec] = Field(default_factory=list)
+    privileged: bool = False
+    network_mode: str | None = None
+    pid_mode: str | None = None
+
+
+class FleetApprovalEvidence(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    actor_id: str = Field(min_length=1, max_length=160)
+    decision: Literal["approved"] = "approved"
+    reason: str = Field(min_length=1, max_length=2000)
+
+
+class FleetReconcileCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    project_name: str = Field(min_length=1, max_length=120)
+    compose_path: str = Field(min_length=1, max_length=500)
+    mode: Literal["dry_run", "apply"]
+    targets: list[FleetServiceSpec] = Field(min_length=1)
+    approval: FleetApprovalEvidence | None = None
+
+
+class FleetReconcileResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: uuid.UUID
+    status: str
+    mode: str
+    risk: str
+    desired_hash: str
+    diff: dict[str, Any]
+    approval_actor_id: str | None
+    runner_result: dict[str, Any]
+    rollback_available: bool
+    replayed: bool = False
+    created_at: datetime
+
+
+class FleetStatusResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    project_name: str
+    compose_path: str
+    compose_digest: str
+    services: list[dict[str, Any]]
+    last_reconcile: FleetReconcileResponse | None

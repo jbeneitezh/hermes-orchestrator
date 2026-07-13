@@ -28,6 +28,8 @@ La API queda disponible en `http://localhost:8080`:
 - `POST /v1/tasks`, `GET /v1/tasks/{id}`: objetivo durable separado de sus intentos.
 - `POST /v1/tasks/{id}/dispatch|comments|cancel`: comandos idempotentes del ciclo.
 - `GET /v1/runs/{id}`, `POST /v1/runs/{id}/approval`: intento y gate revisable.
+- `GET /v1/fleet/status`: estado del Compose observado por el runner privado.
+- `POST /v1/fleet/reconcile-requests`: dry-run/apply idempotente con allowlists y approval independiente.
 - `GET /docs`: OpenAPI interactivo generado por FastAPI.
 
 ## Calidad
@@ -51,6 +53,8 @@ docker compose down -v
 No guardes secretos en `.env.example` ni en el repositorio. La variable `HERMES_ORCHESTRATOR_DATABASE_URL` acepta la URL de PostgreSQL del entorno.
 
 Las rutas gobernadas exigen `X-Actor-Id`. El rol se resuelve desde `HERMES_ORCHESTRATOR_ACTOR_ROLES`; el cliente no puede declarar ni elevar su rol. Las mutaciones exigen además `Idempotency-Key`. Esta resolución es el bootstrap de confianza para la red privada y se sustituirá por autenticación fuerte sin cambiar el servicio de políticas.
+
+El API no monta Docker. `fleet-reconciler` es un proceso privado separado que valida el Compose renderizado y solo ejecuta `config`, `pull` y `up --no-deps` sobre workers allowlisted. El socket no se entrega al líder ni al operador.
 
 ## Arquitectura
 

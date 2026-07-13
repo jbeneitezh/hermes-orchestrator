@@ -21,6 +21,8 @@ class Permission(StrEnum):
     TASKS_CANCEL = "tasks:cancel"
     RUNS_READ = "runs:read"
     APPROVALS_DECIDE = "approvals:decide"
+    FLEET_READ = "fleet:read"
+    FLEET_RECONCILE_REQUEST = "fleet:reconcile_request"
 
 
 ROLE_PERMISSIONS: dict[str, frozenset[Permission]] = {
@@ -37,6 +39,8 @@ ROLE_PERMISSIONS: dict[str, frozenset[Permission]] = {
             Permission.TASKS_CANCEL,
             Permission.RUNS_READ,
             Permission.APPROVALS_DECIDE,
+            Permission.FLEET_READ,
+            Permission.FLEET_RECONCILE_REQUEST,
         }
     ),
     "operator": frozenset(
@@ -46,6 +50,8 @@ ROLE_PERMISSIONS: dict[str, frozenset[Permission]] = {
             Permission.TASKS_READ,
             Permission.TASKS_CANCEL,
             Permission.RUNS_READ,
+            Permission.FLEET_READ,
+            Permission.FLEET_RECONCILE_REQUEST,
         }
     ),
     "researcher": frozenset(
@@ -76,6 +82,7 @@ ROLE_PERMISSIONS: dict[str, frozenset[Permission]] = {
             Permission.TASKS_COMMENT,
             Permission.RUNS_READ,
             Permission.APPROVALS_DECIDE,
+            Permission.FLEET_READ,
         }
     ),
 }
