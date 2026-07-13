@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import signal
+import socket
 import threading
 import uuid
 from collections.abc import Callable
@@ -183,7 +184,7 @@ class RunDispatcher:
     ) -> None:
         self.session_factory = session_factory
         self.settings = settings
-        self.owner = f"system:{settings.run_dispatcher_id}"
+        self.owner = f"system:{settings.run_dispatcher_id}:{socket.gethostname()}"
         self.lease_duration = timedelta(seconds=settings.run_dispatcher_lease_seconds)
         self.retry_delay = timedelta(seconds=settings.run_dispatcher_retry_seconds)
         self.resolver = WorkerResolver(settings.run_dispatcher_worker_secrets)
