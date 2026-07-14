@@ -175,6 +175,30 @@ def test_only_secret_references_are_accepted_and_persisted(catalog_context) -> N
         assert records[0].payload["secret_refs"] == ["secret://codex/broker"]
 
 
+def test_token_budget_is_not_confused_with_an_embedded_credential(catalog_context) -> None:
+    client, _ = catalog_context
+    accepted = client.post(
+        "/v1/agents/requests",
+        headers=OWNER_HEADERS | {"Idempotency-Key": "token-budget-accepted"},
+        json=AGENT_PAYLOAD
+        | {
+            "policy_set": {
+                "name": "data-steward-v3",
+                "budget": {"hard_token_limit": 400_000},
+            }
+        },
+    )
+    rejected = client.post(
+        "/v1/agents/requests",
+        headers=OWNER_HEADERS | {"Idempotency-Key": "access-token-rejected"},
+        json=AGENT_PAYLOAD
+        | {"policy_set": {"name": "unsafe", "access_token": "no-debe-persistirse"}},
+    )
+
+    assert accepted.status_code == 202
+    assert rejected.status_code == 422
+
+
 def test_agent_request_appends_exactly_one_audit_event(catalog_context) -> None:
     client, factory = catalog_context
     headers = OWNER_HEADERS | {"Idempotency-Key": "audit-request-01"}
