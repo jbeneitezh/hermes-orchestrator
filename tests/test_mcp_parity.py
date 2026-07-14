@@ -735,6 +735,22 @@ def test_denied_edge_hidden_agent_and_role_tools(mcp_context) -> None:
     assert "task_dispatch" not in developer_tools
 
 
+def test_trader_role_exposes_only_governed_task_tools(mcp_context) -> None:
+    _, _, _, settings = mcp_context
+    trader = Agent(
+        id=uuid.uuid4(),
+        slug="trader-f17",
+        role="trader",
+        description="Opera como usuario interno de Tradix",
+        owner_actor_id="user:owner",
+    )
+    settings.actor_roles["agent:trader-f17"] = "trader"
+
+    trader_tools = {tool.name for tool in _allowed_tools(identity(trader), settings)}
+
+    assert trader_tools == {"task_get", "task_comment", "task_block", "task_complete"}
+
+
 def test_invalid_input_participant_visibility_comment_usage_and_redaction(mcp_context) -> None:
     _, factory, agents, settings = mcp_context
     with factory() as session:
