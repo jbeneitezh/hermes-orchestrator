@@ -244,7 +244,7 @@ class ManagedAgentRenderer:
                 "API_SERVER_HOST": "0.0.0.0",
                 "API_SERVER_PORT": "8642",
                 "OPENAI_BASE_URL": "http://codex-broker:8650/v1",
-                "HERMES_AGENT_ID": slug,
+                "HERMES_AGENT_ID": payload.role,
                 "HERMES_AGENT_ROLE": payload.role,
                 "HERMES_AGENT_SLUG": slug,
             },
@@ -376,7 +376,7 @@ class ManagedAgentRenderer:
                 hosts_path.chmod(0o600)
         manifest = payload.model_dump(mode="json")
         runtime_manifest = {
-            "id": payload.slug,
+            "id": payload.role,
             "role": payload.role,
             "description": payload.description,
             "workspace": "/workspace",

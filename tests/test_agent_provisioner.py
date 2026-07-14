@@ -176,7 +176,7 @@ def test_render_valido_es_cerrado_y_secreto_fuera_de_git(
     runtime_manifest = json.loads(
         (data / payload.slug / "managed" / "manifest.yaml").read_text(encoding="utf-8")
     )
-    assert runtime_manifest["id"] == payload.slug
+    assert runtime_manifest["id"] == payload.role
     assert runtime_manifest["role"] == "data_steward"
     assert runtime_manifest["execution_profile_default"] == "sol-high"
     assert runtime_manifest["allowed_profiles"] == ["sol-high"]
@@ -275,8 +275,9 @@ def test_data_steward_recibe_identidad_clon_y_credencial_git_persistentes(
     renderer.apply(payload, FakeFleet())
 
     service = renderer._read_document()["services"]["worker-data-steward-f6"]
-    assert service["environment"]["HERMES_AGENT_ID"] == "data-steward-f6"
+    assert service["environment"]["HERMES_AGENT_ID"] == "data_steward"
     assert service["environment"]["HERMES_AGENT_ROLE"] == "data_steward"
+    assert service["environment"]["HERMES_AGENT_SLUG"] == "data-steward-f6"
     assert service["environment"]["HERMES_KNOWLEDGE_REPOSITORY_URL"].endswith("/knowledge.git")
     hosts = data / payload.slug / "home" / ".config" / "gh" / "hosts.yml"
     assert hosts.exists()
