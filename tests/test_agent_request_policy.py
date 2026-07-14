@@ -45,7 +45,7 @@ SAFE_PAYLOAD = {
         "github_pr_create",
         "task_read",
     ],
-    "secret_refs": ["secret://codex/broker-client"],
+    "secret_refs": ["secret://codex/broker-client", "secret://github/shared-agent"],
 }
 
 
