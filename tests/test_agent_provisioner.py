@@ -80,6 +80,42 @@ RISK_MANAGER_PAYLOAD = {
     ],
     "secret_refs": ["secret://codex/broker-client", "secret://github/shared-agent"],
 }
+TRADER_PAYLOAD = {
+    "slug": "trader-f16",
+    "role": "trader",
+    "description": "Trader gobernado de precio y tiempo",
+    "policy_set": {
+        "name": "trader-v3",
+        "execution_profile_default": "sol-high",
+        "allowed_profiles": ["sol-high"],
+        "toolsets": ["terminal_read", "files_read", "git", "mcp"],
+        "mcp_tools": ["task_get", "task_comment", "task_block", "task_complete"],
+        "communication": [
+            "agent:leader",
+            "agent:risk_manager",
+            "agent:researcher",
+            "agent:validator",
+        ],
+        "mount_profile": "trader-knowledge-dataset-tradix-readonly",
+        "budget": {"hard_token_limit": 600_000, "max_concurrent_runs": 1},
+    },
+    "capabilities": [
+        "dataset_read",
+        "market_data_read",
+        "metrics_read",
+        "signals_read",
+        "knowledge_read",
+        "knowledge_write_branch",
+        "git_read",
+        "git_write_branch",
+        "github_pr_create",
+        "task_read",
+        "task_comment",
+        "task_block",
+        "task_complete",
+    ],
+    "secret_refs": ["secret://codex/broker-client", "secret://github/shared-agent"],
+}
 DYNAMIC_TOKEN = "dynamic-data-steward-token"
 DYNAMIC_TOKEN_SHA256 = hashlib.sha256(DYNAMIC_TOKEN.encode()).hexdigest()
 
@@ -491,6 +527,161 @@ def test_risk_manager_template_mount_escape_capabilities_and_rollback_fail_close
     assert rolled_back.status == "rolled_back" and replay.status == "rolled_back"
     assert "worker-risk-manager-f11" not in renderer._read_document()["services"]
     assert (tmp_path / "data" / payload.slug / "managed" / "SOUL.md").exists()
+
+
+def test_trader_renderiza_contexto_mounts_y_workspace_escribible(tmp_path: Path) -> None:
+    managed = tmp_path / "managed"
+    data = tmp_path / "agent-data"
+    renderer = ManagedAgentRenderer(
+        managed_root=managed,
+        data_root=data,
+        host_data_root="/host_mnt/agent-data",
+        dataset_root="/host_mnt/tradix/dataset",
+        tradix_root="/host_mnt/tradix",
+        worker_image="hermes-worker:test",
+        project_name="hermes-test",
+        knowledge_repository_url="https://github.com/example/knowledge.git",
+        github_login="shared-login",
+        github_token="github-test-token",
+    )
+    payload = ProvisioningPayload.model_validate(
+        {"request_id": str(uuid.uuid4()), **TRADER_PAYLOAD}
+    )
+
+    applied = renderer.apply(payload, FakeFleet())
+
+    service = renderer._read_document()["services"]["worker-trader-f16"]
+    mounts = {mount["target"]: mount for mount in service["volumes"]}
+    assert applied.status == "applied" and applied.health == "healthy"
+    assert service["environment"]["HERMES_WRITE_SAFE_ROOT"] == "/workspace"
+    assert mounts["/workspace"]["read_only"] is False
+    assert mounts["/datasets/tradix"]["read_only"] is True
+    assert mounts["/workspace/repos/tradix"]["read_only"] is True
+    bootstrap = data / payload.slug / "managed"
+    assert {path.name for path in bootstrap.iterdir()} >= {
+        "manifest.json",
+        "manifest.yaml",
+        "SOUL.md",
+        "foundation.md",
+        "context.md",
+    }
+    runtime_manifest = json.loads((bootstrap / "manifest.yaml").read_text(encoding="utf-8"))
+    assert runtime_manifest["role"] == "trader"
+    assert runtime_manifest["approvals_mode"] == "off"
+    assert runtime_manifest["communication"] == TRADER_PAYLOAD["policy_set"]["communication"]
+    assert "market_data_read" in runtime_manifest["capabilities"]
+    assert "signals_read" in runtime_manifest["capabilities"]
+    assert "git_write_product" in runtime_manifest["denied_capabilities"]
+    assert "mt5_secret_read" in runtime_manifest["denied_capabilities"]
+    assert "order_submit" in runtime_manifest["denied_capabilities"]
+    assert "self_approve" in runtime_manifest["denied_capabilities"]
+
+
+def test_trader_template_escapes_y_rollback_fallan_cerrado(tmp_path: Path) -> None:
+    renderer = ManagedAgentRenderer(
+        managed_root=tmp_path / "managed",
+        data_root=tmp_path / "data",
+        host_data_root="/host_mnt/agent-data",
+        dataset_root="/host_mnt/tradix/dataset",
+        tradix_root="/host_mnt/tradix",
+        worker_image="hermes-worker:test",
+        project_name="hermes-test",
+        knowledge_repository_url="https://github.com/example/knowledge.git",
+        github_login="shared-login",
+        github_token="github-test-token",
+    )
+    payload = ProvisioningPayload.model_validate(
+        {"request_id": str(uuid.uuid4()), **TRADER_PAYLOAD}
+    )
+    fleet = FakeFleet()
+    renderer.apply(payload, fleet)
+    document = renderer._read_document()
+
+    escaped = copy.deepcopy(document)
+    tradix_mount = next(
+        mount
+        for mount in escaped["services"]["worker-trader-f16"]["volumes"]
+        if mount["target"] == "/workspace/repos/tradix"
+    )
+    tradix_mount["source"] = "/etc"
+    with pytest.raises(ProvisioningError) as mount_denied:
+        renderer.validate_document(escaped)
+    assert mount_denied.value.code == "mount_root_denied"
+
+    for capability in (
+        "git_write_product",
+        "order_submit",
+        "live_trade",
+        "mt5_secret_read",
+        "self_approve",
+        "github_merge",
+    ):
+        with pytest.raises(ProvisioningError) as capability_denied:
+            renderer.apply(
+                payload.model_copy(update={"capabilities": [*payload.capabilities, capability]}),
+                fleet,
+            )
+        assert capability_denied.value.code == "capabilities_not_allowlisted"
+
+    with pytest.raises(ProvisioningError) as communication_denied:
+        renderer.apply(
+            payload.model_copy(
+                update={"policy_set": payload.policy_set | {"communication": ["agent:operator"]}}
+            ),
+            fleet,
+        )
+    assert communication_denied.value.code == "communication_not_allowlisted"
+
+    rolled_back = renderer.rollback(payload, fleet)
+    replay = renderer.rollback(payload, fleet)
+    assert rolled_back.status == "rolled_back" and replay.status == "rolled_back"
+    assert "worker-trader-f16" not in renderer._read_document()["services"]
+    assert (tmp_path / "data" / payload.slug / "managed" / "SOUL.md").exists()
+
+
+def test_trader_sin_tradix_falla_cerrado(tmp_path: Path) -> None:
+    renderer = ManagedAgentRenderer(
+        managed_root=tmp_path / "managed",
+        data_root=tmp_path / "data",
+        host_data_root="/host_mnt/agent-data",
+        dataset_root="/host_mnt/tradix/dataset",
+        worker_image="hermes-worker:test",
+        project_name="hermes-test",
+    )
+    payload = ProvisioningPayload.model_validate(
+        {"request_id": str(uuid.uuid4()), **TRADER_PAYLOAD}
+    )
+
+    with pytest.raises(ProvisioningError) as missing:
+        renderer.apply(payload, FakeFleet())
+
+    assert missing.value.code == "tradix_root_missing"
+    assert not renderer.compose_path.exists()
+
+
+def test_rol_no_escritor_no_fuerza_modo_de_aprobaciones(tmp_path: Path) -> None:
+    renderer = ManagedAgentRenderer(
+        managed_root=tmp_path / "managed",
+        data_root=tmp_path / "data",
+        host_data_root="/host_mnt/agent-data",
+        dataset_root="/host_mnt/tradix/dataset",
+        worker_image="hermes-worker:test",
+        project_name="hermes-test",
+    )
+    payload = provisioning_payload(
+        slug="operator-f16",
+        role="operator",
+        policy_set={"name": "operator-minimal"},
+        capabilities=[],
+        secret_refs=[],
+    )
+
+    renderer.apply(payload, FakeFleet())
+
+    runtime_manifest = json.loads(
+        (tmp_path / "data" / payload.slug / "managed" / "manifest.yaml").read_text(encoding="utf-8")
+    )
+    assert "approvals_mode" not in runtime_manifest
 
 
 def test_risk_manager_template_catalog_and_missing_tradix_fail_closed(
