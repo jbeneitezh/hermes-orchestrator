@@ -47,6 +47,7 @@ ROLE_TOOL_ALLOWLIST: dict[str, set[str]] = {
     "validator": {"task_get", "task_comment", "task_block", "task_complete"},
     "data_steward": {"task_get"},
     "risk_manager": {"task_get", "task_comment", "task_block", "task_complete"},
+    "trader": {"task_get", "task_comment", "task_block", "task_complete"},
 }
 
 
