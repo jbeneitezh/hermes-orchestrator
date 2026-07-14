@@ -11,6 +11,7 @@ from typing import Any, Protocol
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
+from hermes_orchestrator.agent_policy import AgentPolicyCoordinator
 from hermes_orchestrator.config import Settings
 from hermes_orchestrator.database import create_database_engine, create_session_factory
 from hermes_orchestrator.models import (
@@ -23,6 +24,7 @@ from hermes_orchestrator.models import (
     WorkflowContinuation,
 )
 from hermes_orchestrator.policy import communication_is_allowed
+from hermes_orchestrator.provisioning import HttpAgentProvisionerClient
 from hermes_orchestrator.task_services import LifecycleError, create_task, dispatch_task
 from hermes_orchestrator.usage_services import resolve_limits
 from hermes_orchestrator.workflow_services import (
@@ -316,10 +318,16 @@ class WorkflowCoordinator:
         self.session_factory = session_factory
         self.settings = settings
         self.actor_id = f"system:{settings.workflow_coordinator_id}:{socket.gethostname()}"
+        self.agent_policy = AgentPolicyCoordinator(
+            session_factory,
+            settings,
+            HttpAgentProvisionerClient(settings),
+        )
 
     def run_once(self, stop: StopFlag | None = None) -> list[CoordinatorResult]:
         if stop is not None and stop.is_set():
             return []
+        self.agent_policy.run_once(stop)
         self._discover()
         with self.session_factory() as session:
             ids = list(

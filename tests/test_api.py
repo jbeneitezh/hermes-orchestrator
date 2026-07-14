@@ -51,6 +51,7 @@ def test_capabilities_publish_only_bootstrap_features(monkeypatch) -> None:
             "alembic",
             "agent_catalog",
             "agent_request_lifecycle",
+            "agent_request_auto_policy",
             "managed_agent_provisioning",
             "execution_profiles",
             "deny_by_default_policy",

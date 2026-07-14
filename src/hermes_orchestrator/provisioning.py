@@ -355,7 +355,9 @@ class ManagedAgentRenderer:
                 "live_trade",
             ],
             "secret_refs": payload.secret_refs,
-            "communication": [],
+            "communication": payload.policy_set.get("communication", []),
+            "mount_profile": payload.policy_set.get("mount_profile", "tradix-dataset-readonly"),
+            "budget": payload.policy_set.get("budget", {}),
         }
         (agent_root / "manifest.json").write_text(
             json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
