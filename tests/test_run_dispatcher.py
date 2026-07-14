@@ -21,7 +21,14 @@ from hermes_orchestrator.models import (
     Task,
     UsageLedger,
 )
-from hermes_orchestrator.run_dispatcher import WORKER_SECRET_PREFIX, RunDispatcher, build_run_input
+from hermes_orchestrator.provisioning import ProvisioningError
+from hermes_orchestrator.run_dispatcher import (
+    WORKER_SECRET_PREFIX,
+    DispatchError,
+    RunDispatcher,
+    WorkerResolver,
+    build_run_input,
+)
 from tests.fakes.hermes_server import FakeHermesServer, FakeHermesState
 
 SECRET_REF = f"{WORKER_SECRET_PREFIX}developer"
@@ -133,6 +140,39 @@ def test_build_run_input_includes_durable_task_context(session_factory) -> None:
     assert "- parent_task_id: Ninguna" in rendered
     assert "Objetivo:\nEntregar una respuesta verificable" in rendered
     assert "- docs/agents/index.md" in rendered
+
+
+def test_worker_resolver_usa_broker_con_cache_y_preserva_fallback_estatico(
+    session_factory,
+) -> None:
+    calls: list[str] = []
+
+    def dynamic(secret_ref: str) -> str:
+        calls.append(secret_ref)
+        return "dynamic-token"
+
+    with session_factory() as session:
+        resolver = WorkerResolver({}, dynamic_resolver=dynamic, cache_seconds=60)
+        first = resolver.resolve(session, "agent:developer")
+        second = resolver.resolve(session, "agent:developer")
+        static = WorkerResolver({SECRET_REF: "static-token"}, dynamic_resolver=dynamic).resolve(
+            session, "agent:developer"
+        )
+
+    assert first.token == second.token == "dynamic-token"
+    assert static.token == "static-token"
+    assert calls == [SECRET_REF]
+
+
+def test_worker_resolver_falla_cerrado_si_broker_no_resuelve(session_factory) -> None:
+    def unavailable(_: str) -> str:
+        raise ProvisioningError("provisioner_unavailable", "No disponible", 503)
+
+    with session_factory() as session, pytest.raises(DispatchError) as error:
+        WorkerResolver({}, dynamic_resolver=unavailable).resolve(session, "agent:developer")
+
+    assert getattr(error.value, "code", None) == "worker_secret_unresolved"
+    assert "No disponible" not in str(error.value)
 
 
 def test_completed_closes_run_events_and_usage(session_factory) -> None:

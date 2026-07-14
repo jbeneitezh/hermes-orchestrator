@@ -53,6 +53,7 @@ ALLOWED_MOUNT_TARGETS = {
 }
 PROGRAM_EXECUTION_PROFILE = "sol-high"
 PROGRAM_ALLOWED_PROFILES = [PROGRAM_EXECUTION_PROFILE]
+WORKER_API_SECRET_PREFIX = "secret://hermes/api-server/"
 
 
 class ProvisioningError(Exception):
@@ -109,6 +110,19 @@ class ProvisionerResult(BaseModel):
     runner_result: dict[str, Any] = Field(default_factory=dict)
 
 
+class WorkerCredentialRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    secret_ref: str = Field(pattern=r"^secret://hermes/api-server/[a-z][a-z0-9-]{2,39}$")
+
+
+class WorkerCredentialResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    secret_ref: str
+    credential: str
+
+
 class AgentProvisioner(Protocol):
     def apply(self, payload: ProvisioningPayload) -> ProvisionerResult: ...
 
@@ -159,6 +173,42 @@ class HttpAgentProvisionerClient:
 
     def rollback(self, payload: ProvisioningPayload) -> ProvisionerResult:
         return self._request("/v1/internal/agents/rollback", payload)
+
+    def resolve_worker_credential(self, secret_ref: str) -> str:
+        if not self.token:
+            raise ProvisioningError(
+                "provisioner_token_missing", "Falta el token interno del provisioner", 503
+            )
+        try:
+            with httpx.Client(timeout=10) as client:
+                response = client.post(
+                    f"{self.base_url}/v1/internal/agents/credential",
+                    headers={"X-Provisioner-Token": self.token},
+                    json={"secret_ref": secret_ref},
+                )
+        except httpx.HTTPError as error:
+            raise ProvisioningError(
+                "provisioner_unavailable", "Agent provisioner no disponible", 503
+            ) from error
+        if response.status_code >= 400:
+            try:
+                detail = response.json().get("detail", {})
+                code = str(detail.get("code", "worker_credential_rejected"))
+                message = str(detail.get("detail", "Credencial de worker rechazada"))
+            except (AttributeError, ValueError):
+                code, message = (
+                    "worker_credential_rejected",
+                    "Credencial de worker rechazada",
+                )
+            raise ProvisioningError(code, message, response.status_code)
+        try:
+            return WorkerCredentialResponse.model_validate(response.json()).credential
+        except (ValueError, TypeError) as error:
+            raise ProvisioningError(
+                "worker_credential_invalid",
+                "Respuesta de credencial de worker inválida",
+                503,
+            ) from error
 
 
 class ManagedAgentRenderer:
@@ -216,6 +266,37 @@ class ManagedAgentRenderer:
             self.compose_path.write_text(
                 json.dumps(self._empty_document(), indent=2) + "\n", encoding="utf-8"
             )
+
+    def resolve_worker_credential(self, secret_ref: str) -> str:
+        try:
+            request = WorkerCredentialRequest(secret_ref=secret_ref)
+        except ValueError as error:
+            raise ProvisioningError(
+                "worker_secret_ref_invalid", "Referencia de API Hermes inválida"
+            ) from error
+        slug = request.secret_ref.removeprefix(WORKER_API_SECRET_PREFIX)
+        try:
+            runtime_path = (self.data_root / slug / "runtime" / "runtime.env").resolve(strict=True)
+        except OSError as error:
+            raise ProvisioningError(
+                "worker_credential_missing", "Credencial de worker no disponible", 404
+            ) from error
+        if not runtime_path.is_relative_to(self.data_root):
+            raise ProvisioningError(
+                "worker_secret_ref_invalid", "Referencia de API Hermes inválida"
+            )
+        try:
+            for line in runtime_path.read_text(encoding="utf-8").splitlines():
+                key, separator, value = line.partition("=")
+                if separator and key == "API_SERVER_KEY" and value:
+                    return value
+        except OSError as error:
+            raise ProvisioningError(
+                "worker_credential_missing", "Credencial de worker no disponible", 404
+            ) from error
+        raise ProvisioningError(
+            "worker_credential_missing", "Credencial de worker no disponible", 404
+        )
 
     def _mount(self, slug: str, leaf: str, target: str, read_only: bool = False) -> dict[str, Any]:
         return {

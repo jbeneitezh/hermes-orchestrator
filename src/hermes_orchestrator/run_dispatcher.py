@@ -4,6 +4,7 @@ import argparse
 import signal
 import socket
 import threading
+import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -27,6 +28,11 @@ from hermes_orchestrator.hermes_execution import (
     prepare_requested_runtime,
 )
 from hermes_orchestrator.models import Agent, AgentInstance, Task
+from hermes_orchestrator.provisioning import (
+    WORKER_API_SECRET_PREFIX,
+    HttpAgentProvisionerClient,
+    ProvisioningError,
+)
 from hermes_orchestrator.task_services import (
     LifecycleError,
     claim_dispatching_runs,
@@ -37,7 +43,7 @@ from hermes_orchestrator.task_services import (
 )
 
 AdapterFactory = Callable[[str, str], HermesRunsAdapter]
-WORKER_SECRET_PREFIX = "secret://hermes/api-server/"
+WORKER_SECRET_PREFIX = WORKER_API_SECRET_PREFIX
 
 
 class DispatchError(Exception):
@@ -71,8 +77,39 @@ class StopFlag(Protocol):
 
 
 class WorkerResolver:
-    def __init__(self, secrets: dict[str, str]) -> None:
+    def __init__(
+        self,
+        secrets: dict[str, str],
+        *,
+        dynamic_resolver: Callable[[str], str] | None = None,
+        cache_seconds: float = 30.0,
+    ) -> None:
         self._secrets = secrets
+        self._dynamic_resolver = dynamic_resolver
+        self._cache_seconds = cache_seconds
+        self._cache: dict[str, tuple[float, str]] = {}
+        self._cache_lock = threading.Lock()
+
+    def _resolve_token(self, secret_ref: str) -> str | None:
+        static_token = self._secrets.get(secret_ref)
+        if static_token:
+            return static_token
+        if self._dynamic_resolver is None:
+            return None
+        now = time.monotonic()
+        with self._cache_lock:
+            cached = self._cache.get(secret_ref)
+            if cached is not None and cached[0] > now:
+                return cached[1]
+        try:
+            token = self._dynamic_resolver(secret_ref)
+        except ProvisioningError:
+            return None
+        if not token:
+            return None
+        with self._cache_lock:
+            self._cache[secret_ref] = (now + self._cache_seconds, token)
+        return token
 
     def resolve(self, session: Session, worker_actor_id: str) -> WorkerTarget:
         slug = worker_actor_id.removeprefix("agent:")
@@ -104,7 +141,7 @@ class WorkerResolver:
                 f"El agente {slug} no declara una referencia de API Hermes",
                 retryable=False,
             )
-        token = self._secrets.get(secret_ref)
+        token = self._resolve_token(secret_ref)
         if not token:
             raise DispatchError(
                 "worker_secret_unresolved",
@@ -193,7 +230,14 @@ class RunDispatcher:
         self.owner = f"system:{settings.run_dispatcher_id}:{socket.gethostname()}"
         self.lease_duration = timedelta(seconds=settings.run_dispatcher_lease_seconds)
         self.retry_delay = timedelta(seconds=settings.run_dispatcher_retry_seconds)
-        self.resolver = WorkerResolver(settings.run_dispatcher_worker_secrets)
+        dynamic_resolver: Callable[[str], str] | None = None
+        if settings.agent_provisioner_token:
+            dynamic_resolver = HttpAgentProvisionerClient(settings).resolve_worker_credential
+        self.resolver = WorkerResolver(
+            settings.run_dispatcher_worker_secrets,
+            dynamic_resolver=dynamic_resolver,
+            cache_seconds=settings.run_dispatcher_dynamic_secret_cache_seconds,
+        )
         self.adapter_factory = adapter_factory or (
             lambda endpoint, token: HermesRunsAdapter(endpoint, token)
         )

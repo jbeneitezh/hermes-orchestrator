@@ -21,6 +21,7 @@ from hermes_orchestrator.config import Settings
 from hermes_orchestrator.main import create_app
 from hermes_orchestrator.models import Agent, AgentRequestRecord, AuditEvent, Base
 from hermes_orchestrator.provisioning import (
+    WORKER_API_SECRET_PREFIX,
     HttpAgentProvisionerClient,
     ManagedAgentRenderer,
     ProvisionerResult,
@@ -224,6 +225,32 @@ def test_render_valido_es_cerrado_y_secreto_fuera_de_git(
             headers={"X-Provisioner-Token": "f15-server-token"},
             json=payload.model_dump(mode="json"),
         )
+        secret_ref = f"{WORKER_API_SECRET_PREFIX}{payload.slug}"
+        assert (
+            client.post(
+                "/v1/internal/agents/credential",
+                json={"secret_ref": secret_ref},
+            ).status_code
+            == 422
+        )
+        assert (
+            client.post(
+                "/v1/internal/agents/credential",
+                headers={"X-Provisioner-Token": "incorrecto"},
+                json={"secret_ref": secret_ref},
+            ).status_code
+            == 403
+        )
+        credential = client.post(
+            "/v1/internal/agents/credential",
+            headers={"X-Provisioner-Token": "f15-server-token"},
+            json={"secret_ref": secret_ref},
+        )
+        invalid_credential = client.post(
+            "/v1/internal/agents/credential",
+            headers={"X-Provisioner-Token": "f15-server-token"},
+            json={"secret_ref": "secret://hermes/api-server/../escape"},
+        )
         rolled_back = client.post(
             "/v1/internal/agents/rollback",
             headers={"X-Provisioner-Token": "f15-server-token"},
@@ -249,6 +276,16 @@ def test_render_valido_es_cerrado_y_secreto_fuera_de_git(
             json=payload.model_dump(mode="json"),
         )
     assert applied.status_code == 200
+    assert credential.status_code == 200
+    expected_api_key = next(
+        line.removeprefix("API_SERVER_KEY=")
+        for line in (tmp_path / "server-data" / payload.slug / "runtime" / "runtime.env")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if line.startswith("API_SERVER_KEY=")
+    )
+    assert credential.json() == {"secret_ref": secret_ref, "credential": expected_api_key}
+    assert invalid_credential.status_code == 422
     assert rolled_back.json()["status"] == "rolled_back"
     assert failed.status_code == 503
     assert rollback_failed.status_code == 503
@@ -350,7 +387,19 @@ def test_no_op_no_reaplica_fleet(renderer_context, monkeypatch: pytest.MonkeyPat
         def __exit__(self, *args) -> None:
             return None
 
-        def post(self, *args, **kwargs):
+        def post(self, url, *args, **kwargs):
+            if str(url).endswith("/v1/internal/agents/credential"):
+                return type(
+                    "CredentialResponse",
+                    (),
+                    {
+                        "status_code": 200,
+                        "json": lambda self: {
+                            "secret_ref": f"{WORKER_API_SECRET_PREFIX}{payload.slug}",
+                            "credential": "worker-api-token",
+                        },
+                    },
+                )()
             return StubResponse()
 
     monkeypatch.setattr("hermes_orchestrator.provisioning.httpx.Client", StubClient)
@@ -359,6 +408,10 @@ def test_no_op_no_reaplica_fleet(renderer_context, monkeypatch: pytest.MonkeyPat
     )
     assert client.apply(payload).status == "applied"
     assert client.rollback(payload).config_digest == "sha256:http-client"
+    assert (
+        client.resolve_worker_credential(f"{WORKER_API_SECRET_PREFIX}{payload.slug}")
+        == "worker-api-token"
+    )
     StubResponse.status_code = 422
     StubResponse.json = lambda self: {
         "detail": {"code": "template_denied", "detail": "Plantilla denegada"}
@@ -381,6 +434,29 @@ def test_no_op_no_reaplica_fleet(renderer_context, monkeypatch: pytest.MonkeyPat
     assert unavailable.value.code == "provisioner_unavailable"
     with pytest.raises(ProvisioningError, match="Falta el token"):
         HttpAgentProvisionerClient(Settings(agent_provisioner_token="")).apply(payload)
+    with pytest.raises(ProvisioningError, match="Falta el token"):
+        HttpAgentProvisionerClient(Settings(agent_provisioner_token="")).resolve_worker_credential(
+            f"{WORKER_API_SECRET_PREFIX}{payload.slug}"
+        )
+
+
+def test_broker_credencial_falla_cerrado_sin_salir_de_data_root(renderer_context) -> None:
+    renderer, fleet, _, data = renderer_context
+    payload = provisioning_payload(slug="data-steward-broker")
+    renderer.apply(payload, fleet)
+
+    credential = renderer.resolve_worker_credential(f"{WORKER_API_SECRET_PREFIX}{payload.slug}")
+
+    assert credential
+    assert credential in (data / payload.slug / "runtime" / "runtime.env").read_text(
+        encoding="utf-8"
+    )
+    with pytest.raises(ProvisioningError) as missing:
+        renderer.resolve_worker_credential(f"{WORKER_API_SECRET_PREFIX}data-steward-missing")
+    assert missing.value.code == "worker_credential_missing"
+    with pytest.raises(ProvisioningError) as invalid:
+        renderer.resolve_worker_credential("secret://hermes/api-server/../escape")
+    assert invalid.value.code == "worker_secret_ref_invalid"
 
 
 def test_slug_invalido_se_rechaza_antes_de_escribir(renderer_context) -> None:
@@ -567,6 +643,7 @@ def test_apply_publico_materializa_catalogo_y_es_idempotente(api_context) -> Non
         assert agent is not None and agent.instances[0].health == "healthy"
         assert agent.policy_set["execution_profile_default"] == "sol-high"
         assert agent.policy_set["allowed_profiles"] == ["sol-high"]
+        assert f"{WORKER_API_SECRET_PREFIX}{agent.slug}" in agent.secret_refs
 
 
 def test_rollback_detiene_y_preserva_datos_logicos(api_context, renderer_context) -> None:
