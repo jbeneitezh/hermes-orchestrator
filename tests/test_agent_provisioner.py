@@ -21,7 +21,13 @@ from sqlalchemy.orm import Session, sessionmaker
 from hermes_orchestrator import provisioning as provisioning_module
 from hermes_orchestrator.config import Settings
 from hermes_orchestrator.main import create_app
-from hermes_orchestrator.models import Agent, AgentRequestRecord, AuditEvent, Base
+from hermes_orchestrator.models import (
+    Agent,
+    AgentRequestRecord,
+    AuditEvent,
+    Base,
+    CommunicationEdge,
+)
 from hermes_orchestrator.provisioning import (
     WORKER_API_SECRET_PREFIX,
     HttpAgentProvisionerClient,
@@ -882,6 +888,61 @@ def test_apply_publico_materializa_catalogo_y_es_idempotente(api_context) -> Non
         assert agent.policy_set["execution_profile_default"] == "sol-high"
         assert agent.policy_set["allowed_profiles"] == ["sol-high"]
         assert f"{WORKER_API_SECRET_PREFIX}{agent.slug}" in agent.secret_refs
+
+
+def test_apply_materializa_comunicacion_con_lider_sin_duplicar_replay(api_context) -> None:
+    client, factory, _ = api_context
+    request_id = approved_request(client, "communication")
+    with factory() as session:
+        request = session.get(AgentRequestRecord, uuid.UUID(request_id))
+        assert request is not None
+        request.payload = request.payload | {
+            "policy_set": request.payload["policy_set"]
+            | {"communication": ["agent:leader", "agent:trader"]}
+        }
+        session.commit()
+
+    headers = auth_headers("agent:operator", **{"Idempotency-Key": "f15-provision-communication"})
+    first = client.post(
+        f"/v1/agents/requests/{request_id}/provision",
+        headers=headers,
+        json={"reason": "Materializar comunicación allowlisted"},
+    )
+    replay = client.post(
+        f"/v1/agents/requests/{request_id}/provision",
+        headers=headers,
+        json={"reason": "Materializar comunicación allowlisted"},
+    )
+
+    assert first.status_code == 202, first.text
+    assert replay.status_code == 202 and replay.json()["replayed"] is True
+    with factory() as session:
+        leader = session.scalar(select(Agent).where(Agent.slug == "leader"))
+        dynamic = session.scalar(select(Agent).where(Agent.slug == "data-steward-communication"))
+        assert leader is not None and dynamic is not None
+        outgoing = list(
+            session.scalars(
+                select(CommunicationEdge).where(
+                    CommunicationEdge.source_agent_id == dynamic.id,
+                    CommunicationEdge.target_agent_id == leader.id,
+                )
+            )
+        )
+        incoming = list(
+            session.scalars(
+                select(CommunicationEdge).where(
+                    CommunicationEdge.source_agent_id == leader.id,
+                    CommunicationEdge.target_agent_id == dynamic.id,
+                )
+            )
+        )
+
+    assert len(outgoing) == 1
+    assert outgoing[0].task_classes == ["visibility"]
+    assert outgoing[0].scopes == ["read"]
+    assert len(incoming) == 1
+    assert incoming[0].task_classes == ["visibility", "task"]
+    assert incoming[0].scopes == ["read", "dispatch"]
 
 
 def test_rollback_detiene_y_preserva_datos_logicos(api_context, renderer_context) -> None:

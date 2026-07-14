@@ -6,9 +6,10 @@ from datetime import UTC, datetime
 from typing import Any
 
 from pydantic import ValidationError
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from hermes_orchestrator.models import Agent, AgentInstance, AuditEvent
+from hermes_orchestrator.models import Agent, AgentInstance, AuditEvent, CommunicationEdge
 from hermes_orchestrator.provisioning import (
     PROGRAM_ALLOWED_PROFILES,
     PROGRAM_EXECUTION_PROFILE,
@@ -33,6 +34,74 @@ class AgentProvisioningResult:
     request_id: uuid.UUID
     provisioner: ProvisionerResult
     replayed: bool = False
+
+
+def _ensure_communication_edge(
+    session: Session,
+    *,
+    source: Agent,
+    target: Agent,
+    task_classes: list[str],
+    scopes: list[str],
+    approved_by_actor_id: str,
+) -> None:
+    edges = session.scalars(
+        select(CommunicationEdge).where(
+            CommunicationEdge.source_agent_id == source.id,
+            CommunicationEdge.target_agent_id == target.id,
+        )
+    )
+    if any(
+        set(task_classes).issubset(edge.task_classes) and set(scopes).issubset(edge.scopes)
+        for edge in edges
+    ):
+        return
+    session.add(
+        CommunicationEdge(
+            source_agent_id=source.id,
+            target_agent_id=target.id,
+            task_classes=task_classes,
+            scopes=scopes,
+            approved_by_actor_id=approved_by_actor_id,
+        )
+    )
+
+
+def _materialize_communication_policy(
+    session: Session, *, agent: Agent, approved_by_actor_id: str
+) -> None:
+    """Proyecta las relaciones allowlisted sin conceder dispatch al especialista."""
+    references = agent.policy_set.get("communication", [])
+    if not isinstance(references, list):
+        return
+    for reference in references:
+        if not isinstance(reference, str) or not reference.startswith("agent:"):
+            continue
+        target = session.scalar(
+            select(Agent).where(
+                Agent.slug == reference.removeprefix("agent:"),
+                Agent.desired_state == "active",
+            )
+        )
+        if target is None or target.id == agent.id:
+            continue
+        _ensure_communication_edge(
+            session,
+            source=agent,
+            target=target,
+            task_classes=["visibility"],
+            scopes=["read"],
+            approved_by_actor_id=approved_by_actor_id,
+        )
+        if target.role == "leader":
+            _ensure_communication_edge(
+                session,
+                source=target,
+                target=agent,
+                task_classes=["visibility", "task"],
+                scopes=["read", "dispatch"],
+                approved_by_actor_id=approved_by_actor_id,
+            )
 
 
 def _payload(request_id: uuid.UUID, raw: dict[str, Any]) -> ProvisioningPayload:
@@ -77,6 +146,7 @@ def provision_agent_request(
             }
         agent.secret_refs = sorted(set([*agent.secret_refs, worker_secret_ref]))
         agent.updated_at = now
+        _materialize_communication_policy(session, agent=agent, approved_by_actor_id=actor_id)
         session.commit()
         return AgentProvisioningResult(
             request_id=request.id,
@@ -160,6 +230,7 @@ def provision_agent_request(
     instance.health = result.health
     instance.last_heartbeat_at = now
     instance.reconciliation_state = "in_sync"
+    _materialize_communication_policy(session, agent=agent, approved_by_actor_id=actor_id)
     AuditRepository(session).append(
         AuditEvent(
             actor_id=actor_id,
