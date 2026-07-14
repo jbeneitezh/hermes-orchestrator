@@ -50,6 +50,10 @@ class FakeFleet:
         self.apply_calls.append(services)
         return {"services": [{"service": services[0], "state": "running", "health": "healthy"}]}
 
+    def status(self) -> dict[str, Any]:
+        service = self.apply_calls[-1][0]
+        return {"services": [{"service": service, "state": "running", "health": "healthy"}]}
+
     def rollback(self, services: list[str]) -> dict[str, Any]:
         self.rollback_calls.append(services)
         return {"services": [], "action": "rollback"}
@@ -320,6 +324,7 @@ def test_no_op_no_reaplica_fleet(renderer_context, monkeypatch: pytest.MonkeyPat
 
     assert first.status == "applied"
     assert second.status == "no_change"
+    assert second.health == "healthy"
     assert fleet.apply_calls == [["worker-data-steward-f15"]]
 
     class StubResponse:
@@ -502,7 +507,8 @@ def test_apply_publico_materializa_catalogo_y_es_idempotente(api_context) -> Non
     assert first.status_code == 202, first.text
     assert first.json()["status"] == "applied"
     assert replay.json()["replayed"] is True
-    assert len(provisioner.applied) == 1
+    assert replay.json()["health"] == "healthy"
+    assert len(provisioner.applied) == 2
     denied = client.post(
         f"/v1/agents/requests/{request_id}/provision",
         headers=auth_headers("agent:leader", **{"Idempotency-Key": "f15-provision-denied"}),
