@@ -90,17 +90,11 @@ class ProvisioningPayload(BaseModel):
         requested_default = self.policy_set.get(
             "execution_profile_default", PROGRAM_EXECUTION_PROFILE
         )
-        requested_allowed = self.policy_set.get(
-            "allowed_profiles", PROGRAM_ALLOWED_PROFILES
-        )
+        requested_allowed = self.policy_set.get("allowed_profiles", PROGRAM_ALLOWED_PROFILES)
         if requested_default != PROGRAM_EXECUTION_PROFILE:
-            raise ValueError(
-                f"execution_profile_default debe ser {PROGRAM_EXECUTION_PROFILE}"
-            )
+            raise ValueError(f"execution_profile_default debe ser {PROGRAM_EXECUTION_PROFILE}")
         if requested_allowed != PROGRAM_ALLOWED_PROFILES:
-            raise ValueError(
-                f"allowed_profiles debe ser exactamente {PROGRAM_ALLOWED_PROFILES}"
-            )
+            raise ValueError(f"allowed_profiles debe ser exactamente {PROGRAM_ALLOWED_PROFILES}")
         return self
 
 
