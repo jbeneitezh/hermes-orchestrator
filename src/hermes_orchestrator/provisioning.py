@@ -367,13 +367,12 @@ class ManagedAgentRenderer:
                 "  git_protocol: https\n",
                 encoding="utf-8",
             )
-            with suppress(OSError):
-                os.chown(github_config.parent, 10000, 10000)
-                os.chown(github_config, 10000, 10000)
-                os.chown(hosts_path, 10000, 10000)
-                github_config.parent.chmod(0o700)
-                github_config.chmod(0o700)
-                hosts_path.chmod(0o600)
+            for secure_path in (github_config.parent, github_config, hosts_path):
+                with suppress(OSError):
+                    os.chown(secure_path, 10000, 10000)
+            github_config.parent.chmod(0o700)
+            github_config.chmod(0o700)
+            hosts_path.chmod(0o600)
         manifest = payload.model_dump(mode="json")
         runtime_manifest = {
             "id": payload.role,
