@@ -14,9 +14,11 @@ from sqlalchemy.orm import Session, sessionmaker
 from hermes_orchestrator.config import Settings
 from hermes_orchestrator.main import create_app
 from hermes_orchestrator.models import (
+    Agent,
     AuditEvent,
     Base,
     Budget,
+    ExecutionProfile,
     Run,
     Task,
     UsageLedger,
@@ -263,6 +265,95 @@ def test_soft_notice_allows_and_hard_budget_denies_before_dispatch(tmp_path: Pat
         assert hard_response.status_code == 409
         assert hard_response.json()["detail"]["code"] == "budget_hard_exceeded"
         assert hard_run_count == 0
+
+
+def test_program_profile_policy_denies_disabled_unallowlisted_and_above_high(
+    tmp_path: Path,
+) -> None:
+    with usage_context(tmp_path) as (client, factory, _):
+        with factory() as session:
+            session.add(
+                Agent(
+                    slug="developer",
+                    role="developer",
+                    description="Fixture policy v3",
+                    desired_state="active",
+                    owner_actor_id="user:owner",
+                    policy_set={"allowed_profiles": ["sol-high"]},
+                )
+            )
+            session.add_all(
+                [
+                    ExecutionProfile(
+                        id="spark-low",
+                        provider="openai-api",
+                        model="gpt-5.3-codex-spark",
+                        reasoning_effort="low",
+                        max_iterations=8,
+                        timeout_seconds=300,
+                        relative_cost=1,
+                        enabled=False,
+                    ),
+                    ExecutionProfile(
+                        id="terra-medium",
+                        provider="openai-api",
+                        model="gpt-5.6-terra",
+                        reasoning_effort="medium",
+                        max_iterations=20,
+                        timeout_seconds=900,
+                        relative_cost=3,
+                    ),
+                    ExecutionProfile(
+                        id="forbidden-max",
+                        provider="openai-api",
+                        model="gpt-test-max",
+                        reasoning_effort="max",
+                        max_iterations=1,
+                        timeout_seconds=60,
+                        relative_cost=9,
+                    ),
+                ]
+            )
+            session.commit()
+
+        disabled_task = create_task(client, "policy-disabled-spark")
+        disabled = dispatch(client, disabled_task["id"], "policy-disabled-spark-run")
+        assert disabled.status_code == 422
+        assert disabled.json()["detail"]["code"] == "execution_profile_unavailable"
+
+        unallowlisted_task = create_task(client, "policy-unallowlisted-terra")
+        unallowlisted = client.post(
+            f"/v1/tasks/{unallowlisted_task['id']}/dispatch",
+            headers=LEADER | {"Idempotency-Key": "policy-unallowlisted-terra-run"},
+            json={
+                "worker_actor_id": "agent:developer",
+                "requested_profile_id": "terra-medium",
+                "timeout_seconds": 900,
+            },
+        )
+        assert unallowlisted.status_code == 403
+        assert unallowlisted.json()["detail"]["code"] == "execution_profile_denied"
+
+        with factory() as session:
+            developer = session.scalar(select(Agent).where(Agent.slug == "developer"))
+            assert developer is not None
+            developer.policy_set = {"allowed_profiles": ["forbidden-max"]}
+            session.commit()
+        excessive_task = create_task(client, "policy-effort-max")
+        excessive = client.post(
+            f"/v1/tasks/{excessive_task['id']}/dispatch",
+            headers=LEADER | {"Idempotency-Key": "policy-effort-max-run"},
+            json={
+                "worker_actor_id": "agent:developer",
+                "requested_profile_id": "forbidden-max",
+                "timeout_seconds": 900,
+            },
+        )
+        assert excessive.status_code == 403
+        assert excessive.json()["detail"]["code"] == "reasoning_effort_denied"
+
+        with factory() as session:
+            assert session.scalar(select(func.count()).select_from(Run)) == 0
 
 
 def test_quota_denial_returns_retry_after_and_resets_by_time(tmp_path: Path) -> None:

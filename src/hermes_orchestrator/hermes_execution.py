@@ -89,6 +89,10 @@ def _fallback_is_explicit(
         return False
     if not str(fallback.get("reason") or "").strip():
         return False
+    if not str(fallback.get("approved_by") or "").strip():
+        return False
+    if not str(fallback.get("approval_id") or "").strip():
+        return False
     if fallback.get("from_model") != requested.get("model"):
         return False
     if fallback.get("to_model") != observed.get("model"):

@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from hermes_orchestrator.config import Settings
 from hermes_orchestrator.models import (
+    Agent,
     AuditEvent,
     Budget,
     CircuitBreaker,
@@ -345,6 +346,41 @@ def enforce_dispatch_controls(
     now: datetime | None = None,
 ) -> ControlLimits:
     effective_now = ensure_aware(now or utc_now())
+    profile = session.get(ExecutionProfile, requested_profile_id)
+    if profile is not None and not profile.enabled:
+        _deny(
+            session,
+            actor_id=actor_id,
+            task=task,
+            code="execution_profile_unavailable",
+            detail="El perfil solicitado está deshabilitado",
+            status_code=422,
+        )
+    worker = session.scalar(
+        select(Agent).where(
+            Agent.slug == worker_actor_id.removeprefix("agent:"),
+            Agent.desired_state == "active",
+        )
+    )
+    allowed_profiles = worker.policy_set.get("allowed_profiles") if worker is not None else None
+    if isinstance(allowed_profiles, list) and requested_profile_id not in allowed_profiles:
+        _deny(
+            session,
+            actor_id=actor_id,
+            task=task,
+            code="execution_profile_denied",
+            detail="El perfil solicitado no está permitido para el agente",
+            status_code=403,
+        )
+    if profile is not None and profile.reasoning_effort in {"xhigh", "max", "ultra"}:
+        _deny(
+            session,
+            actor_id=actor_id,
+            task=task,
+            code="reasoning_effort_denied",
+            detail="La política del programa limita el esfuerzo máximo a high",
+            status_code=403,
+        )
     limits = resolve_limits(session, task, worker_actor_id, requested_profile_id, settings)
     circuit = session.scalar(
         select(CircuitBreaker).where(
