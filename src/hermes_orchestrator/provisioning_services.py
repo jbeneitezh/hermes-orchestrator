@@ -45,22 +45,6 @@ def _payload(request_id: uuid.UUID, raw: dict[str, Any]) -> ProvisioningPayload:
         ) from error
 
 
-def _existing_result(session: Session, request_id: uuid.UUID, slug: str) -> ProvisionerResult:
-    agent = AgentRepository(session).get_by_slug(slug)
-    if agent is None or not agent.instances:
-        raise AgentRequestLifecycleError(
-            "provisioning_state_missing", "Falta la instancia aplicada", 500
-        )
-    instance = agent.instances[-1]
-    return ProvisionerResult(
-        status="no_change",
-        service_name=f"worker-{slug}",
-        config_digest=instance.config_revision or "unknown",
-        health=instance.health,
-        credential_sha256=str(agent.policy_set.get("runtime_auth_token_sha256", "")) or None,
-    )
-
-
 def provision_agent_request(
     session: Session,
     *,
@@ -72,9 +56,28 @@ def provision_agent_request(
     request = get_agent_request(session, request_id)
     slug = str(request.payload.get("slug", ""))
     if request.application_idempotency_key == idempotency_key and request.status == "applied":
+        payload = _payload(request.id, request.payload)
+        result = provisioner.apply(payload)
+        agent = AgentRepository(session).get_by_slug(slug)
+        if agent is None or not agent.instances:
+            raise AgentRequestLifecycleError(
+                "provisioning_state_missing", "Falta la instancia aplicada", 500
+            )
+        instance = agent.instances[-1]
+        now = datetime.now(UTC)
+        instance.health = result.health
+        instance.config_revision = result.config_digest
+        instance.last_heartbeat_at = now
+        instance.reconciliation_state = "in_sync"
+        if result.credential_sha256:
+            agent.policy_set = agent.policy_set | {
+                "runtime_auth_token_sha256": result.credential_sha256
+            }
+        agent.updated_at = now
+        session.commit()
         return AgentProvisioningResult(
             request_id=request.id,
-            provisioner=_existing_result(session, request.id, slug),
+            provisioner=result,
             replayed=True,
         )
     if request.status not in {"approved", "apply_failed"}:

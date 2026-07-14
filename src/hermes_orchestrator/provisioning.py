@@ -116,6 +116,8 @@ class AgentProvisioner(Protocol):
 
 
 class FleetManagedRunner(Protocol):
+    def status(self) -> dict[str, Any]: ...
+
     def apply(self, services: list[str]) -> dict[str, Any]: ...
 
     def rollback(self, services: list[str]) -> dict[str, Any]: ...
@@ -452,12 +454,22 @@ class ManagedAgentRenderer:
         current = json.dumps(document, sort_keys=True, separators=(",", ":"))
         credential_sha256 = self._write_agent_files(payload)
         if current == previous:
+            runner_result = fleet.status()
+            health = (
+                "healthy"
+                if any(
+                    item.get("service") == service_name and item.get("health") == "healthy"
+                    for item in runner_result.get("services", [])
+                )
+                else "unknown"
+            )
             return ProvisionerResult(
                 status="no_change",
                 service_name=service_name,
                 config_digest=self._digest(document),
-                health="unknown",
+                health=health,
                 credential_sha256=credential_sha256,
+                runner_result=runner_result,
             )
         self.compose_path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
         try:
