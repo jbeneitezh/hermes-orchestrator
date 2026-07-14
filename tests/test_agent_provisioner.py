@@ -329,7 +329,14 @@ def test_render_valido_es_cerrado_y_secreto_fuera_de_git(
 
 def test_data_steward_recibe_identidad_clon_y_credencial_git_persistentes(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    chown_calls: list[tuple[Path, int, int]] = []
+
+    def record_chown(path: str | Path, owner: int, group: int) -> None:
+        chown_calls.append((Path(path), owner, group))
+
+    monkeypatch.setattr(provisioning_module.os, "chown", record_chown)
     managed = tmp_path / "managed"
     data = tmp_path / "agent-data"
     renderer = ManagedAgentRenderer(
@@ -361,11 +368,20 @@ def test_data_steward_recibe_identidad_clon_y_credencial_git_persistentes(
     assert hosts.parent.parent.stat().st_mode & 0o777 == 0o770
     assert hosts.parent.stat().st_mode & 0o777 == 0o770
     assert hosts.stat().st_mode & 0o777 == 0o660
+    workspace_repos = data / payload.slug / "workspace" / "repos"
+    assert workspace_repos.stat().st_mode & 0o777 == 0o770
     assert "github-test-token" in hosts.read_text(encoding="utf-8")
     assert "secret://github/shared-agent" in (
         managed / "agents" / payload.slug / "runtime.env.ref"
     ).read_text(encoding="utf-8")
     assert "github-test-token" not in renderer.compose_path.read_text(encoding="utf-8")
+    github_chowns = [
+        (owner, group)
+        for path, owner, group in chown_calls
+        if path == hosts or path in {hosts.parent, hosts.parent.parent}
+    ]
+    assert github_chowns == [(-1, 10000), (-1, 10000), (-1, 10000)]
+    assert (workspace_repos, -1, 10000) in chown_calls
 
 
 def test_risk_manager_renderiza_contexto_y_mounts_minimos(tmp_path: Path) -> None:

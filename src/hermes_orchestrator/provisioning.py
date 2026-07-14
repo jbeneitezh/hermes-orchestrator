@@ -518,7 +518,7 @@ class ManagedAgentRenderer:
     def _write_agent_files(self, payload: ProvisioningPayload) -> str:
         agent_root = self.managed_root / "agents" / payload.slug
         runtime_root = self.data_root / payload.slug / "runtime"
-        for leaf in ("hermes", "home", "workspace", "managed"):
+        for leaf in ("hermes", "home", "workspace", "workspace/repos", "managed"):
             worker_path = self.data_root / payload.slug / leaf
             worker_path.mkdir(parents=True, exist_ok=True)
             with suppress(OSError, AttributeError):
@@ -545,7 +545,11 @@ class ManagedAgentRenderer:
             )
             for secure_path in (github_config.parent, github_config, hosts_path):
                 with suppress(OSError, AttributeError):
-                    os.chown(secure_path, 10000, 10000)
+                    # El provisioner no es root: puede compartir el path con el
+                    # grupo del worker, pero no transferir su propietario. Si
+                    # se intenta cambiar ambos valores, chown falla completo y
+                    # Hermes pierde acceso a su configuración persistente.
+                    os.chown(secure_path, -1, 10000)
             github_config.parent.chmod(0o770)
             github_config.chmod(0o770)
             hosts_path.chmod(0o660)
