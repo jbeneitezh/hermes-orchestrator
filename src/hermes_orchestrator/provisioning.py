@@ -376,7 +376,7 @@ class ManagedAgentRenderer:
                 hosts_path.chmod(0o600)
         manifest = payload.model_dump(mode="json")
         runtime_manifest = {
-            "id": payload.role,
+            "id": payload.slug,
             "role": payload.role,
             "description": payload.description,
             "workspace": "/workspace",
