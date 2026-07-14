@@ -281,6 +281,9 @@ def test_data_steward_recibe_identidad_clon_y_credencial_git_persistentes(
     assert service["environment"]["HERMES_KNOWLEDGE_REPOSITORY_URL"].endswith("/knowledge.git")
     hosts = data / payload.slug / "home" / ".config" / "gh" / "hosts.yml"
     assert hosts.exists()
+    assert hosts.parent.parent.stat().st_mode & 0o777 == 0o700
+    assert hosts.parent.stat().st_mode & 0o777 == 0o700
+    assert hosts.stat().st_mode & 0o777 == 0o600
     assert "github-test-token" in hosts.read_text(encoding="utf-8")
     assert "secret://github/shared-agent" in (
         managed / "agents" / payload.slug / "runtime.env.ref"
