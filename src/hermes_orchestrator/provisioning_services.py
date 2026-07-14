@@ -12,6 +12,7 @@ from hermes_orchestrator.models import Agent, AgentInstance, AuditEvent
 from hermes_orchestrator.provisioning import (
     PROGRAM_ALLOWED_PROFILES,
     PROGRAM_EXECUTION_PROFILE,
+    WORKER_API_SECRET_PREFIX,
     AgentProvisioner,
     ProvisionerResult,
     ProvisioningError,
@@ -55,6 +56,7 @@ def provision_agent_request(
 ) -> AgentProvisioningResult:
     request = get_agent_request(session, request_id)
     slug = str(request.payload.get("slug", ""))
+    worker_secret_ref = f"{WORKER_API_SECRET_PREFIX}{slug}"
     if request.application_idempotency_key == idempotency_key and request.status == "applied":
         payload = _payload(request.id, request.payload)
         result = provisioner.apply(payload)
@@ -73,6 +75,7 @@ def provision_agent_request(
             agent.policy_set = agent.policy_set | {
                 "runtime_auth_token_sha256": result.credential_sha256
             }
+        agent.secret_refs = sorted(set([*agent.secret_refs, worker_secret_ref]))
         agent.updated_at = now
         session.commit()
         return AgentProvisioningResult(
@@ -145,7 +148,7 @@ def provision_agent_request(
         "runtime_auth_token_sha256": result.credential_sha256,
     }
     agent.capabilities = payload.capabilities
-    agent.secret_refs = payload.secret_refs
+    agent.secret_refs = sorted(set([*payload.secret_refs, worker_secret_ref]))
     agent.updated_at = now
     instance = agent.instances[-1] if agent.instances else AgentInstance(agent_id=agent.id)
     if not agent.instances:

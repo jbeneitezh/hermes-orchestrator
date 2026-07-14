@@ -14,6 +14,8 @@ from hermes_orchestrator.provisioning import (
     ProvisionerResult,
     ProvisioningError,
     ProvisioningPayload,
+    WorkerCredentialRequest,
+    WorkerCredentialResponse,
 )
 
 TOKEN = os.environ["AGENT_PROVISIONER_TOKEN"]
@@ -56,6 +58,21 @@ def raise_http(error: ProvisioningError) -> NoReturn:
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.post(
+    "/v1/internal/agents/credential",
+    response_model=WorkerCredentialResponse,
+    dependencies=[Depends(authorize)],
+)
+def resolve_credential(payload: WorkerCredentialRequest) -> WorkerCredentialResponse:
+    try:
+        return WorkerCredentialResponse(
+            secret_ref=payload.secret_ref,
+            credential=renderer.resolve_worker_credential(payload.secret_ref),
+        )
+    except ProvisioningError as error:
+        raise_http(error)
 
 
 @app.post(
