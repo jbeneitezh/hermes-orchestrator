@@ -176,6 +176,8 @@ def test_declared_fallback_maps_to_effective_profile(session_factory) -> None:
         runtime_fallback={
             "applied": True,
             "reason": "capacidad temporal",
+            "approved_by": "system:program-policy",
+            "approval_id": "fallback-fixture-approved",
             "from_model": "gpt-5.3-codex-spark",
             "to_model": "gpt-5.6-luna",
         },
@@ -186,6 +188,25 @@ def test_declared_fallback_maps_to_effective_profile(session_factory) -> None:
     assert run.status == "completed"
     assert run.effective_profile_id == "luna-low"
     assert run.runtime_fallback["applied"] is True
+
+
+def test_fallback_without_traceable_approval_fails_closed(session_factory) -> None:
+    create_run(session_factory)
+    state = FakeHermesState(
+        effective_model="gpt-5.6-luna",
+        runtime_fallback={
+            "applied": True,
+            "reason": "capacidad temporal",
+            "from_model": "gpt-5.3-codex-spark",
+            "to_model": "gpt-5.6-luna",
+        },
+    )
+    with FakeHermesServer(state) as server:
+        run = execute(session_factory, server)
+
+    assert run.status == "failed"
+    assert run.error_code == "model_effective_unverified"
+    assert run.effective_profile_id is None
 
 
 def test_model_mismatch_without_fallback_fails_closed(session_factory) -> None:

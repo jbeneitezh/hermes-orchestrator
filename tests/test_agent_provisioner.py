@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import importlib
+import json
 import sys
 import uuid
 from collections.abc import Iterator
@@ -172,6 +173,11 @@ def test_render_valido_es_cerrado_y_secreto_fuera_de_git(
     assert not (managed / "agents" / payload.slug / "runtime.env").exists()
     assert (data / payload.slug / "runtime" / "runtime.env").exists()
     assert "secret://" in (managed / "agents" / payload.slug / "runtime.env.ref").read_text()
+    runtime_manifest = json.loads(
+        (data / payload.slug / "managed" / "manifest.yaml").read_text(encoding="utf-8")
+    )
+    assert runtime_manifest["execution_profile_default"] == "sol-high"
+    assert runtime_manifest["allowed_profiles"] == ["sol-high"]
 
     server_managed = tmp_path / "server-managed"
     env = {
@@ -315,6 +321,15 @@ def test_slug_invalido_se_rechaza_antes_de_escribir(renderer_context) -> None:
         provisioning_payload(slug="../escape")
     with pytest.raises(ValidationError, match="Campo de plantilla denegado"):
         provisioning_payload(policy_set={"nested": [{"command": "rm -rf /"}]})
+    with pytest.raises(ValidationError, match="execution_profile_default debe ser sol-high"):
+        provisioning_payload(
+            policy_set={
+                "execution_profile_default": "spark-low",
+                "allowed_profiles": ["spark-low"],
+            }
+        )
+    with pytest.raises(ValidationError, match="allowed_profiles debe ser exactamente"):
+        provisioning_payload(policy_set={"allowed_profiles": ["sol-high", "terra-medium"]})
     renderer.ensure_document()
     renderer.compose_path.write_text("{invalid", encoding="utf-8")
     with pytest.raises(ProvisioningError) as invalid_json:
@@ -481,6 +496,8 @@ def test_apply_publico_materializa_catalogo_y_es_idempotente(api_context) -> Non
         agent = session.scalar(select(Agent).where(Agent.slug == "data-steward-apply"))
         assert request is not None and request.status == "applied"
         assert agent is not None and agent.instances[0].health == "healthy"
+        assert agent.policy_set["execution_profile_default"] == "sol-high"
+        assert agent.policy_set["allowed_profiles"] == ["sol-high"]
 
 
 def test_rollback_detiene_y_preserva_datos_logicos(api_context, renderer_context) -> None:

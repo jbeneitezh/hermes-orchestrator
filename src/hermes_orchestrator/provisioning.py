@@ -51,6 +51,8 @@ ALLOWED_MOUNT_TARGETS = {
     "/bootstrap",
     "/datasets/tradix",
 }
+PROGRAM_EXECUTION_PROFILE = "sol-high"
+PROGRAM_ALLOWED_PROFILES = [PROGRAM_EXECUTION_PROFILE]
 
 
 class ProvisioningError(Exception):
@@ -85,6 +87,14 @@ class ProvisioningPayload(BaseModel):
                     visit(child)
 
         visit(self.policy_set)
+        requested_default = self.policy_set.get(
+            "execution_profile_default", PROGRAM_EXECUTION_PROFILE
+        )
+        requested_allowed = self.policy_set.get("allowed_profiles", PROGRAM_ALLOWED_PROFILES)
+        if requested_default != PROGRAM_EXECUTION_PROFILE:
+            raise ValueError(f"execution_profile_default debe ser {PROGRAM_EXECUTION_PROFILE}")
+        if requested_allowed != PROGRAM_ALLOWED_PROFILES:
+            raise ValueError(f"allowed_profiles debe ser exactamente {PROGRAM_ALLOWED_PROFILES}")
         return self
 
 
@@ -331,12 +341,8 @@ class ManagedAgentRenderer:
             "role": payload.role,
             "description": payload.description,
             "workspace": "/workspace",
-            "execution_profile_default": str(
-                payload.policy_set.get("execution_profile_default", "terra-medium")
-            ),
-            "allowed_profiles": payload.policy_set.get(
-                "allowed_profiles", ["spark-low", "luna-low", "terra-medium", "sol-high"]
-            ),
+            "execution_profile_default": PROGRAM_EXECUTION_PROFILE,
+            "allowed_profiles": PROGRAM_ALLOWED_PROFILES,
             "toolsets": payload.policy_set.get("toolsets", ["terminal_read", "files_read", "mcp"]),
             "mcp_tools": payload.policy_set.get(
                 "mcp_tools", ["task_get", "task_comment", "task_block", "task_complete"]
