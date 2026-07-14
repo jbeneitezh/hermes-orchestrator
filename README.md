@@ -69,7 +69,7 @@ No guardes secretos en `.env.example` ni en el repositorio. La variable `HERMES_
 
 Las rutas gobernadas exigen `X-Actor-Id`. El rol se resuelve desde `HERMES_ORCHESTRATOR_ACTOR_ROLES`; el cliente no puede declarar ni elevar su rol. Las mutaciones exigen además `Idempotency-Key`. Esta resolución es el bootstrap de confianza para la red privada y se sustituirá por autenticación fuerte sin cambiar el servicio de políticas.
 
-Una `AgentRequest` transita de `pending` a `approved` o `rejected`. La aprobación nunca puede hacerla el solicitante. El provisionador interno puede registrar después `applied` o `apply_failed`; este contrato es el punto de entrada de F15 y en F14 todavía no renderiza ni modifica Compose. La retirada cambia el estado a `retired` y conserva solicitud, decisiones y eventos de auditoría.
+Una `AgentRequest` transita de `pending` a `approved` o `rejected`. La aprobación nunca puede hacerla el solicitante. Cuando `HERMES_ORCHESTRATOR_AGENT_POLICY_ENABLED=true`, el `workflow-coordinator` usa el actor estable `system:agent-policy` para validar perfiles versionados, rechazar cualquier elevación y entregar al provisionador únicamente solicitudes allowlisted. El proceso comprueba rol, capabilities, secret refs, comunicación, perfil de mounts, modelo, presupuesto y capacidad de flota; el replay no repite la aplicación. Las decisiones externas siguen bajo control de su aprobador original. La retirada cambia el estado a `retired` y conserva solicitud, decisiones y eventos de auditoría.
 
 El API no monta Docker. `fleet-reconciler` es un proceso privado separado que valida el Compose renderizado y solo ejecuta `config`, `pull` y `up --no-deps` sobre workers allowlisted. El socket no se entrega al líder ni al operador.
 

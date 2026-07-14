@@ -43,6 +43,11 @@ class Settings(BaseSettings):
     ]
     agent_provisioner_url: str = "http://agent-provisioner:8091"
     agent_provisioner_token: str = ""
+    agent_policy_enabled: bool = False
+    agent_policy_actor_id: str = "system:agent-policy"
+    agent_policy_allowed_roles: list[str] = ["data_steward"]
+    agent_policy_max_active_agents: int = 6
+    agent_policy_batch_size: int = 5
     usage_project_id: str = "tradix"
     usage_window_seconds: int = 86400
     usage_soft_token_limit: int = 5_000_000
