@@ -176,6 +176,8 @@ def test_render_valido_es_cerrado_y_secreto_fuera_de_git(
     runtime_manifest = json.loads(
         (data / payload.slug / "managed" / "manifest.yaml").read_text(encoding="utf-8")
     )
+    assert runtime_manifest["id"] == payload.slug
+    assert runtime_manifest["role"] == "data_steward"
     assert runtime_manifest["execution_profile_default"] == "sol-high"
     assert runtime_manifest["allowed_profiles"] == ["sol-high"]
 
