@@ -1,0 +1,44 @@
+{
+  "role": "risk_manager",
+  "policy_names": ["risk-manager-v3"],
+  "mount_profiles": ["risk-knowledge-dataset-tradix-readonly"],
+  "allowed_capabilities": [
+    "dataset_read",
+    "git_read",
+    "git_write_branch",
+    "github_pr_create",
+    "knowledge_read",
+    "knowledge_write_branch",
+    "metrics_read",
+    "task_block",
+    "task_comment",
+    "task_complete",
+    "task_read"
+  ],
+  "allowed_secret_refs": [
+    "secret://codex/broker-client",
+    "secret://github/shared-agent"
+  ],
+  "allowed_toolsets": ["terminal_read", "files_read", "git", "mcp"],
+  "allowed_mcp_tools": ["task_get", "task_comment", "task_block", "task_complete"],
+  "allowed_communication": [
+    "agent:leader",
+    "agent:trader",
+    "agent:researcher",
+    "agent:validator"
+  ],
+  "denied_capabilities": [
+    "agent_request",
+    "approval_decide",
+    "capital_allocate",
+    "docker_admin",
+    "environment_promote",
+    "git_write_product",
+    "github_merge",
+    "live_trade",
+    "order_submit",
+    "secret_admin",
+    "secret_read",
+    "self_approve"
+  ]
+}

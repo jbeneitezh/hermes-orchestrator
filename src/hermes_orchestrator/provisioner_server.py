@@ -24,6 +24,7 @@ renderer = ManagedAgentRenderer(
     data_root=Path(os.environ["AGENT_PROVISIONER_DATA_ROOT"]),
     host_data_root=os.environ["AGENT_PROVISIONER_HOST_DATA_ROOT"],
     dataset_root=os.environ["AGENT_PROVISIONER_DATASET_ROOT"],
+    tradix_root=os.environ.get("AGENT_PROVISIONER_TRADIX_ROOT", ""),
     worker_image=os.environ["AGENT_PROVISIONER_WORKER_IMAGE"],
     project_name=os.environ["AGENT_PROVISIONER_PROJECT_NAME"],
     knowledge_repository_url=os.environ.get("AGENT_PROVISIONER_KNOWLEDGE_REPOSITORY_URL", ""),

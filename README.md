@@ -71,6 +71,8 @@ Las rutas gobernadas exigen `X-Actor-Id`. El rol se resuelve desde `HERMES_ORCHE
 
 Una `AgentRequest` transita de `pending` a `approved` o `rejected`. La aprobación nunca puede hacerla el solicitante. Cuando `HERMES_ORCHESTRATOR_AGENT_POLICY_ENABLED=true`, el `workflow-coordinator` usa el actor estable `system:agent-policy` para validar perfiles versionados, rechazar cualquier elevación y entregar al provisionador únicamente solicitudes allowlisted. El proceso comprueba rol, capabilities, secret refs, comunicación, perfil de mounts, modelo, presupuesto y capacidad de flota; el replay no repite la aplicación. Las decisiones externas siguen bajo control de su aprobador original. La retirada cambia el estado a `retired` y conserva solicitud, decisiones y eventos de auditoría.
 
+El catálogo v3 incluye `data_steward` y `risk_manager`. El segundo se materializa desde un template versionado con manifiesto, SOUL, fundamento y contexto; recibe Knowledge escribible en rama y mounts read-only para dataset y Tradix. No dispone de producto write, órdenes, capital, secretos, Docker, promoción, merge ni autoaprobación.
+
 El API no monta Docker. `fleet-reconciler` es un proceso privado separado que valida el Compose renderizado y solo ejecuta `config`, `pull` y `up --no-deps` sobre workers allowlisted. El socket no se entrega al líder ni al operador.
 
 Cada run terminal genera como máximo un asiento en `usage_ledger`. Antes de cada dispatch se evalúan concurrencia, fan-out, retry, cuota, presupuesto soft/hard y circuito worker/perfil. Los límites por defecto provienen de `HERMES_ORCHESTRATOR_USAGE_*`; la tabla `budgets` permite estrecharlos por proyecto, agente, perfil o categoría y el presupuesto de la Task puede estrecharlos aún más.

@@ -71,7 +71,50 @@ DATA_STEWARD_PROFILE = SafeAgentProfile(
     max_active_role=2,
 )
 
-SAFE_AGENT_PROFILES = {DATA_STEWARD_PROFILE.role: DATA_STEWARD_PROFILE}
+RISK_MANAGER_PROFILE = SafeAgentProfile(
+    profile_id="risk-manager-v3",
+    role="risk_manager",
+    slug_prefix="risk-manager-",
+    policy_names=("risk-manager-v3",),
+    capabilities=(
+        "dataset_read",
+        "git_read",
+        "git_write_branch",
+        "github_pr_create",
+        "knowledge_read",
+        "knowledge_write_branch",
+        "metrics_read",
+        "task_block",
+        "task_comment",
+        "task_complete",
+        "task_read",
+    ),
+    secret_refs=(
+        "secret://codex/broker-client",
+        "secret://github/shared-agent",
+    ),
+    toolsets=("terminal_read", "files_read", "git", "mcp"),
+    mcp_tools=("task_get", "task_comment", "task_block", "task_complete"),
+    communication=(
+        "agent:leader",
+        "agent:trader",
+        "agent:researcher",
+        "agent:validator",
+    ),
+    mount_profiles=("risk-knowledge-dataset-tradix-readonly",),
+    budget_limits=(
+        ("hard_token_limit", 750_000),
+        ("max_concurrent_runs", 1),
+        ("max_iterations", 10),
+        ("max_sources", 30),
+    ),
+    max_active_role=1,
+)
+
+SAFE_AGENT_PROFILES = {
+    DATA_STEWARD_PROFILE.role: DATA_STEWARD_PROFILE,
+    RISK_MANAGER_PROFILE.role: RISK_MANAGER_PROFILE,
+}
 ALLOWED_POLICY_KEYS = {
     "allowed_profiles",
     "budget",

@@ -4,6 +4,7 @@ import copy
 import hashlib
 import importlib
 import json
+import shutil
 import sys
 import uuid
 from collections.abc import Iterator
@@ -17,6 +18,7 @@ from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
+from hermes_orchestrator import provisioning as provisioning_module
 from hermes_orchestrator.config import Settings
 from hermes_orchestrator.main import create_app
 from hermes_orchestrator.models import Agent, AgentRequestRecord, AuditEvent, Base
@@ -37,6 +39,40 @@ PAYLOAD = {
     "policy_set": {"name": "data-read-only"},
     "capabilities": ["dataset_read"],
     "secret_refs": ["secret://codex/broker-client"],
+}
+RISK_MANAGER_PAYLOAD = {
+    "slug": "risk-manager-f11",
+    "role": "risk_manager",
+    "description": "Gestor de riesgos gobernado",
+    "policy_set": {
+        "name": "risk-manager-v3",
+        "execution_profile_default": "sol-high",
+        "allowed_profiles": ["sol-high"],
+        "toolsets": ["terminal_read", "files_read", "git", "mcp"],
+        "mcp_tools": ["task_get", "task_comment", "task_block", "task_complete"],
+        "communication": [
+            "agent:leader",
+            "agent:trader",
+            "agent:researcher",
+            "agent:validator",
+        ],
+        "mount_profile": "risk-knowledge-dataset-tradix-readonly",
+        "budget": {"hard_token_limit": 600_000, "max_concurrent_runs": 1},
+    },
+    "capabilities": [
+        "dataset_read",
+        "metrics_read",
+        "knowledge_read",
+        "knowledge_write_branch",
+        "git_read",
+        "git_write_branch",
+        "github_pr_create",
+        "task_read",
+        "task_comment",
+        "task_block",
+        "task_complete",
+    ],
+    "secret_refs": ["secret://codex/broker-client", "secret://github/shared-agent"],
 }
 DYNAMIC_TOKEN = "dynamic-data-steward-token"
 DYNAMIC_TOKEN_SHA256 = hashlib.sha256(DYNAMIC_TOKEN.encode()).hexdigest()
@@ -330,6 +366,192 @@ def test_data_steward_recibe_identidad_clon_y_credencial_git_persistentes(
         managed / "agents" / payload.slug / "runtime.env.ref"
     ).read_text(encoding="utf-8")
     assert "github-test-token" not in renderer.compose_path.read_text(encoding="utf-8")
+
+
+def test_risk_manager_renderiza_contexto_y_mounts_minimos(tmp_path: Path) -> None:
+    managed = tmp_path / "managed"
+    data = tmp_path / "agent-data"
+    renderer = ManagedAgentRenderer(
+        managed_root=managed,
+        data_root=data,
+        host_data_root="/host_mnt/agent-data",
+        dataset_root="/host_mnt/tradix/dataset",
+        tradix_root="/host_mnt/tradix",
+        worker_image="hermes-worker:test",
+        project_name="hermes-test",
+        knowledge_repository_url="https://github.com/example/knowledge.git",
+        github_login="shared-login",
+        github_token="github-test-token",
+    )
+    payload = ProvisioningPayload.model_validate(
+        {"request_id": str(uuid.uuid4()), **RISK_MANAGER_PAYLOAD}
+    )
+    fleet = FakeFleet()
+
+    applied = renderer.apply(payload, fleet)
+
+    service = renderer._read_document()["services"]["worker-risk-manager-f11"]
+    mounts = {mount["target"]: mount for mount in service["volumes"]}
+    assert applied.status == "applied" and applied.health == "healthy"
+    assert mounts["/datasets/tradix"]["read_only"] is True
+    assert mounts["/workspace/repos/tradix"] == {
+        "type": "bind",
+        "source": "/host_mnt/tradix",
+        "target": "/workspace/repos/tradix",
+        "read_only": True,
+    }
+    assert mounts["/workspace"]["read_only"] is False
+    bootstrap = data / payload.slug / "managed"
+    assert {path.name for path in bootstrap.iterdir()} >= {
+        "manifest.json",
+        "manifest.yaml",
+        "SOUL.md",
+        "foundation.md",
+        "context.md",
+    }
+    runtime_manifest = json.loads((bootstrap / "manifest.yaml").read_text(encoding="utf-8"))
+    assert runtime_manifest["role"] == "risk_manager"
+    assert runtime_manifest["communication"] == RISK_MANAGER_PAYLOAD["policy_set"]["communication"]
+    assert "git_write_product" in runtime_manifest["denied_capabilities"]
+    assert "order_submit" in runtime_manifest["denied_capabilities"]
+    assert "self_approve" in runtime_manifest["denied_capabilities"]
+
+
+def test_risk_manager_template_mount_escape_capabilities_and_rollback_fail_closed(
+    tmp_path: Path,
+) -> None:
+    renderer = ManagedAgentRenderer(
+        managed_root=tmp_path / "managed",
+        data_root=tmp_path / "data",
+        host_data_root="/host_mnt/agent-data",
+        dataset_root="/host_mnt/tradix/dataset",
+        tradix_root="/host_mnt/tradix",
+        worker_image="hermes-worker:test",
+        project_name="hermes-test",
+        knowledge_repository_url="https://github.com/example/knowledge.git",
+        github_login="shared-login",
+        github_token="github-test-token",
+    )
+    payload = ProvisioningPayload.model_validate(
+        {"request_id": str(uuid.uuid4()), **RISK_MANAGER_PAYLOAD}
+    )
+    fleet = FakeFleet()
+    renderer.apply(payload, fleet)
+    document = renderer._read_document()
+    escaped = copy.deepcopy(document)
+    risk_mount = next(
+        mount
+        for mount in escaped["services"]["worker-risk-manager-f11"]["volumes"]
+        if mount["target"] == "/workspace/repos/tradix"
+    )
+    risk_mount["source"] = "/etc"
+    with pytest.raises(ProvisioningError) as mount_denied:
+        renderer.validate_document(escaped)
+    assert mount_denied.value.code == "mount_root_denied"
+
+    with pytest.raises(ProvisioningError) as capability_denied:
+        renderer.apply(
+            payload.model_copy(update={"capabilities": [*payload.capabilities, "order_submit"]}),
+            fleet,
+        )
+    assert capability_denied.value.code == "capabilities_not_allowlisted"
+    with pytest.raises(ProvisioningError) as communication_denied:
+        renderer.apply(
+            payload.model_copy(
+                update={"policy_set": payload.policy_set | {"communication": ["agent:operator"]}}
+            ),
+            fleet,
+        )
+    assert communication_denied.value.code == "communication_not_allowlisted"
+
+    rolled_back = renderer.rollback(payload, fleet)
+    replay = renderer.rollback(payload, fleet)
+    assert rolled_back.status == "rolled_back" and replay.status == "rolled_back"
+    assert "worker-risk-manager-f11" not in renderer._read_document()["services"]
+    assert (tmp_path / "data" / payload.slug / "managed" / "SOUL.md").exists()
+
+
+def test_risk_manager_template_catalog_and_missing_tradix_fail_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = provisioning_module.ROLE_TEMPLATE_ROOT / "risk_manager"
+    payload = ProvisioningPayload.model_validate(
+        {"request_id": str(uuid.uuid4()), **RISK_MANAGER_PAYLOAD}
+    )
+
+    def renderer() -> ManagedAgentRenderer:
+        return ManagedAgentRenderer(
+            managed_root=tmp_path / "managed",
+            data_root=tmp_path / "data",
+            host_data_root="/host_mnt/agent-data",
+            dataset_root="/host_mnt/tradix/dataset",
+            tradix_root="/host_mnt/tradix",
+            worker_image="hermes-worker:test",
+            project_name="hermes-test",
+        )
+
+    incomplete = tmp_path / "catalog-incomplete"
+    (incomplete / "risk_manager").mkdir(parents=True)
+    monkeypatch.setattr(provisioning_module, "ROLE_TEMPLATE_ROOT", incomplete)
+    with pytest.raises(ProvisioningError) as files_invalid:
+        renderer()._role_template("risk_manager")
+    assert files_invalid.value.code == "template_files_invalid"
+
+    invalid_json = tmp_path / "catalog-invalid-json"
+    shutil.copytree(source, invalid_json / "risk_manager")
+    (invalid_json / "risk_manager" / "manifest.json").write_text("{invalid", encoding="utf-8")
+    monkeypatch.setattr(provisioning_module, "ROLE_TEMPLATE_ROOT", invalid_json)
+    with pytest.raises(ProvisioningError) as manifest_invalid:
+        renderer()._role_template("risk_manager")
+    assert manifest_invalid.value.code == "template_manifest_invalid"
+
+    incompatible = tmp_path / "catalog-incompatible"
+    shutil.copytree(source, incompatible / "risk_manager")
+    manifest_path = incompatible / "risk_manager" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["role"] = "trader"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    monkeypatch.setattr(provisioning_module, "ROLE_TEMPLATE_ROOT", incompatible)
+    with pytest.raises(ProvisioningError) as role_invalid:
+        renderer()._role_template("risk_manager")
+    assert role_invalid.value.code == "template_manifest_invalid"
+
+    malformed = tmp_path / "catalog-malformed"
+    shutil.copytree(source, malformed / "risk_manager")
+    malformed_path = malformed / "risk_manager" / "manifest.json"
+    malformed_manifest = json.loads(malformed_path.read_text(encoding="utf-8"))
+    malformed_manifest["allowed_capabilities"] = None
+    malformed_path.write_text(json.dumps(malformed_manifest), encoding="utf-8")
+    monkeypatch.setattr(provisioning_module, "ROLE_TEMPLATE_ROOT", malformed)
+    with pytest.raises(ProvisioningError) as allowlist_invalid:
+        renderer()._validate_role_template(payload)
+    assert allowlist_invalid.value.code == "template_manifest_invalid"
+
+    monkeypatch.setattr(provisioning_module, "ROLE_TEMPLATE_ROOT", source.parent)
+    with pytest.raises(ProvisioningError) as policy_denied:
+        renderer()._validate_role_template(
+            payload.model_copy(update={"policy_set": payload.policy_set | {"name": "unknown"}})
+        )
+    assert policy_denied.value.code == "policy_name_not_allowlisted"
+    with pytest.raises(ProvisioningError) as mount_denied:
+        renderer()._validate_role_template(
+            payload.model_copy(
+                update={"policy_set": payload.policy_set | {"mount_profile": "host-root"}}
+            )
+        )
+    assert mount_denied.value.code == "mount_not_allowlisted"
+
+    no_tradix = ManagedAgentRenderer(
+        managed_root=tmp_path / "managed-no-tradix",
+        data_root=tmp_path / "data-no-tradix",
+        host_data_root="/host_mnt/agent-data",
+        dataset_root="/host_mnt/tradix/dataset",
+        worker_image="hermes-worker:test",
+        project_name="hermes-test",
+    )
+    with pytest.raises(ProvisioningError) as tradix_missing:
+        no_tradix._service(payload)
+    assert tradix_missing.value.code == "tradix_root_missing"
 
 
 def test_credencial_git_solicitada_sin_material_falla_cerrado(tmp_path: Path) -> None:
