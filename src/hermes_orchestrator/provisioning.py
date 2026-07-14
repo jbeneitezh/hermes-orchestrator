@@ -58,8 +58,9 @@ PROGRAM_EXECUTION_PROFILE = "sol-high"
 PROGRAM_ALLOWED_PROFILES = [PROGRAM_EXECUTION_PROFILE]
 WORKER_API_SECRET_PREFIX = "secret://hermes/api-server/"
 ROLE_TEMPLATE_ROOT = (Path(__file__).parent / "agent_templates").resolve()
-KNOWLEDGE_DATASET_ROLES = {"data_steward", "risk_manager"}
-TRADIX_READONLY_ROLES = {"risk_manager"}
+KNOWLEDGE_DATASET_ROLES = {"data_steward", "risk_manager", "trader"}
+TRADIX_READONLY_ROLES = {"risk_manager", "trader"}
+KNOWLEDGE_WRITER_ROLES = {"data_steward", "risk_manager", "trader"}
 REQUIRED_ROLE_TEMPLATE_FILES = {"manifest.json", "SOUL.md", "foundation.md", "context.md"}
 
 
@@ -392,7 +393,9 @@ class ManagedAgentRenderer:
                 "TZ": "Europe/Madrid",
                 "HOME": "/home/hermes",
                 "HERMES_HOME": "/opt/data",
-                "HERMES_WRITE_SAFE_ROOT": "/opt/data",
+                "HERMES_WRITE_SAFE_ROOT": (
+                    "/workspace" if payload.role in KNOWLEDGE_WRITER_ROLES else "/opt/data"
+                ),
                 "HERMES_ORIG_CWD": "/workspace",
                 "API_SERVER_ENABLED": "true",
                 "API_SERVER_HOST": "0.0.0.0",
@@ -577,6 +580,8 @@ class ManagedAgentRenderer:
             "mount_profile": payload.policy_set.get("mount_profile", "tradix-dataset-readonly"),
             "budget": payload.policy_set.get("budget", {}),
         }
+        if payload.role in KNOWLEDGE_WRITER_ROLES:
+            runtime_manifest["approvals_mode"] = "off"
         (agent_root / "manifest.json").write_text(
             json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
         )

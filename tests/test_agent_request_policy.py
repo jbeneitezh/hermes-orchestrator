@@ -88,6 +88,48 @@ RISK_MANAGER_PAYLOAD = {
     "secret_refs": ["secret://codex/broker-client", "secret://github/shared-agent"],
 }
 
+TRADER_PAYLOAD = {
+    "slug": "trader-policy-01",
+    "role": "trader",
+    "description": "Analiza precio y tiempo sin autoridad operativa",
+    "policy_set": {
+        "name": "trader-v3",
+        "execution_profile_default": "sol-high",
+        "allowed_profiles": ["sol-high"],
+        "toolsets": ["terminal_read", "files_read", "git", "mcp"],
+        "mcp_tools": ["task_get", "task_comment", "task_block", "task_complete"],
+        "communication": [
+            "agent:leader",
+            "agent:risk_manager",
+            "agent:researcher",
+            "agent:validator",
+        ],
+        "mount_profile": "trader-knowledge-dataset-tradix-readonly",
+        "budget": {
+            "hard_token_limit": 600_000,
+            "max_concurrent_runs": 1,
+            "max_iterations": 8,
+            "max_sources": 30,
+        },
+    },
+    "capabilities": [
+        "dataset_read",
+        "market_data_read",
+        "metrics_read",
+        "signals_read",
+        "knowledge_read",
+        "knowledge_write_branch",
+        "git_read",
+        "git_write_branch",
+        "github_pr_create",
+        "task_read",
+        "task_comment",
+        "task_block",
+        "task_complete",
+    ],
+    "secret_refs": ["secret://codex/broker-client", "secret://github/shared-agent"],
+}
+
 
 class FakeProvisioner:
     def __init__(self) -> None:
@@ -121,7 +163,7 @@ def policy_context(tmp_path: Path):
         environment="test",
         agent_policy_enabled=True,
         agent_policy_actor_id="system:agent-policy",
-        agent_policy_allowed_roles=["data_steward", "risk_manager"],
+        agent_policy_allowed_roles=["data_steward", "risk_manager", "trader"],
         agent_policy_max_active_agents=6,
         agent_policy_batch_size=10,
     )
@@ -184,6 +226,24 @@ def test_risk_manager_profile_is_allowlisted_with_independent_approval(policy_co
         assert agent is not None and agent.role == "risk_manager"
 
 
+def test_trader_profile_is_allowlisted_with_independent_approval(policy_context) -> None:
+    factory, settings, provisioner = policy_context
+    request_id = create_request(factory, TRADER_PAYLOAD)
+
+    result = AgentPolicyCoordinator(factory, settings, provisioner).run_once()[0]
+
+    assert result.action == "apply" and result.status == "applied"
+    assert result.profile_digest is not None
+    assert provisioner.apply_calls[0].role == "trader"
+    with factory() as session:
+        request = session.get(AgentRequestRecord, request_id)
+        agent = session.scalar(select(Agent).where(Agent.slug == TRADER_PAYLOAD["slug"]))
+        assert request is not None
+        assert request.requested_by_actor_id == "agent:leader"
+        assert request.decided_by_actor_id == "system:agent-policy"
+        assert agent is not None and agent.role == "trader"
+
+
 @pytest.mark.parametrize(
     "capability",
     [
@@ -238,6 +298,62 @@ def test_risk_manager_communication_and_mount_cannot_expand(policy_context) -> N
     assert provisioner.apply_calls == []
 
 
+@pytest.mark.parametrize(
+    "capability",
+    [
+        "git_write_product",
+        "order_submit",
+        "live_trade",
+        "capital_allocate",
+        "docker_admin",
+        "mt5_secret_read",
+        "secret_read",
+        "approval_decide",
+        "self_approve",
+        "github_merge",
+    ],
+)
+def test_trader_sensitive_authority_is_rejected(policy_context, capability: str) -> None:
+    factory, settings, provisioner = policy_context
+    payload = TRADER_PAYLOAD | {
+        "slug": f"trader-{uuid.uuid4().hex[:8]}",
+        "capabilities": [*TRADER_PAYLOAD["capabilities"], capability],
+    }
+    create_request(factory, payload)
+
+    result = AgentPolicyCoordinator(factory, settings, provisioner).run_once()[0]
+
+    assert result.status == "rejected"
+    assert result.code in {"capability_not_allowlisted", "sensitive_authority_denied"}
+    assert provisioner.apply_calls == []
+
+
+def test_trader_communication_and_mount_cannot_expand(policy_context) -> None:
+    factory, settings, provisioner = policy_context
+    forbidden = [
+        TRADER_PAYLOAD
+        | {
+            "slug": "trader-operator",
+            "policy_set": TRADER_PAYLOAD["policy_set"] | {"communication": ["agent:operator"]},
+        },
+        TRADER_PAYLOAD
+        | {
+            "slug": "trader-host",
+            "policy_set": TRADER_PAYLOAD["policy_set"] | {"mount_profile": "host-root"},
+        },
+    ]
+    for payload in forbidden:
+        create_request(factory, payload)
+
+    results = AgentPolicyCoordinator(factory, settings, provisioner).run_once()
+
+    assert {result.code for result in results} == {
+        "communication_not_allowlisted",
+        "mount_not_allowlisted",
+    }
+    assert provisioner.apply_calls == []
+
+
 def test_replay_does_not_apply_twice_or_duplicate_audit(policy_context) -> None:
     factory, settings, provisioner = policy_context
     request_id = create_request(factory)
@@ -260,8 +376,8 @@ def test_replay_does_not_apply_twice_or_duplicate_audit(policy_context) -> None:
 def test_role_outside_catalog_is_rejected(policy_context) -> None:
     factory, settings, provisioner = policy_context
     payload = SAFE_PAYLOAD | {
-        "slug": "trader-policy-01",
-        "role": "trader",
+        "slug": "operator-policy-01",
+        "role": "operator",
     }
     request_id = create_request(factory, payload)
 
