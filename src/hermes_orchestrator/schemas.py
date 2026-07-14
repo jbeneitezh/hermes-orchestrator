@@ -52,9 +52,14 @@ class AgentRequestCreate(BaseModel):
         def visit(value: Any, key: str = "") -> None:
             normalized_key = key.lower()
             is_reference = normalized_key.endswith(("_ref", "_refs"))
+            is_token_budget = normalized_key.endswith("_token_limit") or normalized_key in {
+                "max_tokens",
+                "token_budget",
+            }
             if (
                 normalized_key
                 and not is_reference
+                and not is_token_budget
                 and any(fragment in normalized_key for fragment in forbidden_fragments)
             ):
                 raise ValueError("Los secretos solo pueden declararse mediante *_ref o *_refs")
