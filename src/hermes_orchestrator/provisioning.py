@@ -169,6 +169,9 @@ class ManagedAgentRenderer:
         dataset_root: str,
         worker_image: str,
         project_name: str,
+        knowledge_repository_url: str = "",
+        github_login: str = "",
+        github_token: str = "",
     ) -> None:
         self.managed_root = managed_root.resolve()
         self.data_root = data_root.resolve()
@@ -176,6 +179,9 @@ class ManagedAgentRenderer:
         self.dataset_root = os.path.normpath(dataset_root)
         self.worker_image = worker_image
         self.project_name = project_name
+        self.knowledge_repository_url = knowledge_repository_url.strip()
+        self.github_login = github_login.strip()
+        self.github_token = github_token.strip()
         self.compose_path = self.managed_root / "agents.compose.yaml"
 
     @staticmethod
@@ -238,7 +244,9 @@ class ManagedAgentRenderer:
                 "API_SERVER_HOST": "0.0.0.0",
                 "API_SERVER_PORT": "8642",
                 "OPENAI_BASE_URL": "http://codex-broker:8650/v1",
-                "HERMES_AGENT_ID": payload.role,
+                "HERMES_AGENT_ID": slug,
+                "HERMES_AGENT_ROLE": payload.role,
+                "HERMES_AGENT_SLUG": slug,
             },
             "volumes": [
                 self._mount(slug, "hermes", "/opt/data"),
@@ -273,6 +281,13 @@ class ManagedAgentRenderer:
             },
         }
         if payload.role == "data_steward":
+            if self.knowledge_repository_url:
+                service["environment"]["HERMES_KNOWLEDGE_REPOSITORY_URL"] = (
+                    self.knowledge_repository_url
+                )
+                service["environment"]["HERMES_KNOWLEDGE_WORKTREE"] = (
+                    "/workspace/repos/hermes-tradix-knowledge"
+                )
             service["volumes"].append(
                 {
                     "type": "bind",
@@ -335,6 +350,30 @@ class ManagedAgentRenderer:
                 worker_path.chmod(0o770)
         agent_root.mkdir(parents=True, exist_ok=True)
         runtime_root.mkdir(parents=True, exist_ok=True)
+        if "secret://github/shared-agent" in payload.secret_refs:
+            if not self.github_login or not self.github_token:
+                raise ProvisioningError(
+                    "github_credential_missing",
+                    "Falta la credencial GitHub estándar del agente",
+                    503,
+                )
+            github_config = self.data_root / payload.slug / "home" / ".config" / "gh"
+            github_config.mkdir(parents=True, exist_ok=True)
+            hosts_path = github_config / "hosts.yml"
+            hosts_path.write_text(
+                "github.com:\n"
+                f"  user: {json.dumps(self.github_login)}\n"
+                f"  oauth_token: {json.dumps(self.github_token)}\n"
+                "  git_protocol: https\n",
+                encoding="utf-8",
+            )
+            with suppress(OSError):
+                os.chown(github_config.parent, -1, 10000)
+                os.chown(github_config, -1, 10000)
+                os.chown(hosts_path, -1, 10000)
+                github_config.parent.chmod(0o700)
+                github_config.chmod(0o700)
+                hosts_path.chmod(0o600)
         manifest = payload.model_dump(mode="json")
         runtime_manifest = {
             "id": payload.role,
@@ -367,6 +406,8 @@ class ManagedAgentRenderer:
             f"API_SERVER_KEY=secret://hermes/api-server/{payload.slug}",
             "OPENAI_API_KEY=secret://codex/broker-client",
         ]
+        if "secret://github/shared-agent" in payload.secret_refs:
+            references.append("GITHUB_AUTH=secret://github/shared-agent")
         (agent_root / "runtime.env.ref").write_text("\n".join(references) + "\n", encoding="utf-8")
         (self.data_root / payload.slug / "managed" / "manifest.json").write_text(
             json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"

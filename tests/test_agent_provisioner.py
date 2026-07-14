@@ -248,6 +248,63 @@ def test_render_valido_es_cerrado_y_secreto_fuera_de_git(
     assert rollback_failed.status_code == 503
 
 
+def test_data_steward_recibe_identidad_clon_y_credencial_git_persistentes(
+    tmp_path: Path,
+) -> None:
+    managed = tmp_path / "managed"
+    data = tmp_path / "agent-data"
+    renderer = ManagedAgentRenderer(
+        managed_root=managed,
+        data_root=data,
+        host_data_root="/host_mnt/agent-data",
+        dataset_root="/host_mnt/tradix/dataset",
+        worker_image="hermes-worker:test",
+        project_name="hermes-test",
+        knowledge_repository_url="https://github.com/example/knowledge.git",
+        github_login="shared-login",
+        github_token="github-test-token",
+    )
+    payload = provisioning_payload(
+        slug="data-steward-f6",
+        policy_set={"name": "data-steward-v3", "mount_profile": "knowledge-branch-workspace"},
+        secret_refs=["secret://codex/broker-client", "secret://github/shared-agent"],
+    )
+
+    renderer.apply(payload, FakeFleet())
+
+    service = renderer._read_document()["services"]["worker-data-steward-f6"]
+    assert service["environment"]["HERMES_AGENT_ID"] == "data-steward-f6"
+    assert service["environment"]["HERMES_AGENT_ROLE"] == "data_steward"
+    assert service["environment"]["HERMES_KNOWLEDGE_REPOSITORY_URL"].endswith("/knowledge.git")
+    hosts = data / payload.slug / "home" / ".config" / "gh" / "hosts.yml"
+    assert hosts.exists()
+    assert "github-test-token" in hosts.read_text(encoding="utf-8")
+    assert "secret://github/shared-agent" in (
+        managed / "agents" / payload.slug / "runtime.env.ref"
+    ).read_text(encoding="utf-8")
+    assert "github-test-token" not in renderer.compose_path.read_text(encoding="utf-8")
+
+
+def test_credencial_git_solicitada_sin_material_falla_cerrado(tmp_path: Path) -> None:
+    renderer = ManagedAgentRenderer(
+        managed_root=tmp_path / "managed",
+        data_root=tmp_path / "data",
+        host_data_root="/host_mnt/agent-data",
+        dataset_root="/host_mnt/tradix/dataset",
+        worker_image="hermes-worker:test",
+        project_name="hermes-test",
+    )
+    payload = provisioning_payload(
+        slug="data-steward-f6-missing",
+        secret_refs=["secret://codex/broker-client", "secret://github/shared-agent"],
+    )
+
+    with pytest.raises(ProvisioningError) as missing:
+        renderer.apply(payload, FakeFleet())
+
+    assert missing.value.code == "github_credential_missing"
+
+
 def test_no_op_no_reaplica_fleet(renderer_context, monkeypatch: pytest.MonkeyPatch) -> None:
     renderer, fleet, _, _ = renderer_context
     payload = provisioning_payload()

@@ -54,7 +54,10 @@ DATA_STEWARD_PROFILE = SafeAgentProfile(
         "task_complete",
         "task_read",
     ),
-    secret_refs=("secret://codex/broker-client",),
+    secret_refs=(
+        "secret://codex/broker-client",
+        "secret://github/shared-agent",
+    ),
     toolsets=("terminal_read", "files_read", "git", "mcp"),
     mcp_tools=("task_get", "task_comment", "task_block", "task_complete"),
     communication=("agent:leader", "agent:researcher", "agent:validator"),

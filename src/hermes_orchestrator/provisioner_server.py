@@ -24,6 +24,9 @@ renderer = ManagedAgentRenderer(
     dataset_root=os.environ["AGENT_PROVISIONER_DATASET_ROOT"],
     worker_image=os.environ["AGENT_PROVISIONER_WORKER_IMAGE"],
     project_name=os.environ["AGENT_PROVISIONER_PROJECT_NAME"],
+    knowledge_repository_url=os.environ.get("AGENT_PROVISIONER_KNOWLEDGE_REPOSITORY_URL", ""),
+    github_login=os.environ.get("AGENT_PROVISIONER_GITHUB_LOGIN", ""),
+    github_token=os.environ.get("AGENT_PROVISIONER_GITHUB_TOKEN", ""),
 )
 renderer.ensure_document()
 fleet = HttpFleetRunnerClient(
