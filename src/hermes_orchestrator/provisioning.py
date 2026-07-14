@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import posixpath
 import re
 import secrets
 import uuid
@@ -22,6 +23,7 @@ AgentTemplateRole = Literal[
     "validator",
     "operator",
     "data_steward",
+    "risk_manager",
     "trader",
 ]
 
@@ -50,10 +52,15 @@ ALLOWED_MOUNT_TARGETS = {
     "/workspace",
     "/bootstrap",
     "/datasets/tradix",
+    "/workspace/repos/tradix",
 }
 PROGRAM_EXECUTION_PROFILE = "sol-high"
 PROGRAM_ALLOWED_PROFILES = [PROGRAM_EXECUTION_PROFILE]
 WORKER_API_SECRET_PREFIX = "secret://hermes/api-server/"
+ROLE_TEMPLATE_ROOT = (Path(__file__).parent / "agent_templates").resolve()
+KNOWLEDGE_DATASET_ROLES = {"data_steward", "risk_manager"}
+TRADIX_READONLY_ROLES = {"risk_manager"}
+REQUIRED_ROLE_TEMPLATE_FILES = {"manifest.json", "SOUL.md", "foundation.md", "context.md"}
 
 
 class ProvisioningError(Exception):
@@ -219,6 +226,7 @@ class ManagedAgentRenderer:
         data_root: Path,
         host_data_root: str,
         dataset_root: str,
+        tradix_root: str = "",
         worker_image: str,
         project_name: str,
         knowledge_repository_url: str = "",
@@ -227,14 +235,76 @@ class ManagedAgentRenderer:
     ) -> None:
         self.managed_root = managed_root.resolve()
         self.data_root = data_root.resolve()
-        self.host_data_root = os.path.normpath(host_data_root)
-        self.dataset_root = os.path.normpath(dataset_root)
+        self.host_data_root = posixpath.normpath(host_data_root)
+        self.dataset_root = posixpath.normpath(dataset_root)
+        self.tradix_root = posixpath.normpath(tradix_root) if tradix_root else ""
         self.worker_image = worker_image
         self.project_name = project_name
         self.knowledge_repository_url = knowledge_repository_url.strip()
         self.github_login = github_login.strip()
         self.github_token = github_token.strip()
         self.compose_path = self.managed_root / "agents.compose.yaml"
+
+    def _role_template(self, role: AgentTemplateRole) -> tuple[dict[str, Any], Path] | None:
+        template_root = ROLE_TEMPLATE_ROOT / role
+        if not template_root.exists():
+            return None
+        resolved = template_root.resolve()
+        if not resolved.is_relative_to(ROLE_TEMPLATE_ROOT):
+            raise ProvisioningError("template_root_denied", "Raíz de template fuera del catálogo")
+        names = {
+            path.name
+            for path in resolved.iterdir()
+            if path.is_file() and path.name != "__init__.py"
+        }
+        if names != REQUIRED_ROLE_TEMPLATE_FILES:
+            raise ProvisioningError("template_files_invalid", "Template de rol incompleto")
+        try:
+            manifest = json.loads((resolved / "manifest.json").read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as error:
+            raise ProvisioningError(
+                "template_manifest_invalid", "Manifest de rol inválido"
+            ) from error
+        if not isinstance(manifest, dict) or manifest.get("role") != role:
+            raise ProvisioningError("template_manifest_invalid", "Manifest de rol incompatible")
+        return manifest, resolved
+
+    def _validate_role_template(self, payload: ProvisioningPayload) -> dict[str, Any] | None:
+        loaded = self._role_template(payload.role)
+        if loaded is None:
+            return None
+        template, _ = loaded
+        checks = (
+            ("capabilities", payload.capabilities, template.get("allowed_capabilities")),
+            ("secret_refs", payload.secret_refs, template.get("allowed_secret_refs")),
+            (
+                "toolsets",
+                payload.policy_set.get("toolsets", []),
+                template.get("allowed_toolsets"),
+            ),
+            (
+                "mcp_tools",
+                payload.policy_set.get("mcp_tools", []),
+                template.get("allowed_mcp_tools"),
+            ),
+            (
+                "communication",
+                payload.policy_set.get("communication", []),
+                template.get("allowed_communication"),
+            ),
+        )
+        for key, requested, allowed in checks:
+            if not isinstance(requested, list) or not isinstance(allowed, list):
+                raise ProvisioningError(
+                    "template_manifest_invalid", "Allowlist de template inválida"
+                )
+            if not set(requested).issubset(set(allowed)):
+                raise ProvisioningError(f"{key}_not_allowlisted", f"{key} fuera del template")
+        if payload.policy_set.get("name") not in template.get("policy_names", []):
+            raise ProvisioningError("policy_name_not_allowlisted", "Policy fuera del template")
+        if payload.policy_set.get("mount_profile") not in template.get("mount_profiles", []):
+            raise ProvisioningError("mount_not_allowlisted", "Mount profile fuera del template")
+        return template
 
     @staticmethod
     def _digest(document: dict[str, Any]) -> str:
@@ -301,12 +371,13 @@ class ManagedAgentRenderer:
     def _mount(self, slug: str, leaf: str, target: str, read_only: bool = False) -> dict[str, Any]:
         return {
             "type": "bind",
-            "source": os.path.join(self.host_data_root, slug, leaf),
+            "source": posixpath.join(self.host_data_root, slug, leaf),
             "target": target,
             "read_only": read_only,
         }
 
     def _service(self, payload: ProvisioningPayload) -> dict[str, Any]:
+        self._validate_role_template(payload)
         slug = payload.slug
         service: dict[str, Any] = {
             "image": self.worker_image,
@@ -363,7 +434,7 @@ class ManagedAgentRenderer:
                 "io.hermes.agent.request": str(payload.request_id),
             },
         }
-        if payload.role == "data_steward":
+        if payload.role in KNOWLEDGE_DATASET_ROLES:
             if self.knowledge_repository_url:
                 service["environment"]["HERMES_KNOWLEDGE_REPOSITORY_URL"] = (
                     self.knowledge_repository_url
@@ -376,6 +447,17 @@ class ManagedAgentRenderer:
                     "type": "bind",
                     "source": self.dataset_root,
                     "target": "/datasets/tradix",
+                    "read_only": True,
+                }
+            )
+        if payload.role in TRADIX_READONLY_ROLES:
+            if not self.tradix_root:
+                raise ProvisioningError("tradix_root_missing", "Falta el root read-only de Tradix")
+            service["volumes"].append(
+                {
+                    "type": "bind",
+                    "source": self.tradix_root,
+                    "target": "/workspace/repos/tradix",
                     "read_only": True,
                 }
             )
@@ -402,16 +484,27 @@ class ManagedAgentRenderer:
             if service.get("cap_drop") != ["ALL"] or service.get("read_only") is not True:
                 raise ProvisioningError("hardening_required", "Hardening de worker incompleto")
             for mount in service.get("volumes", []):
-                source = os.path.normpath(str(mount.get("source", "")))
+                source = posixpath.normpath(str(mount.get("source", "")))
                 target = str(mount.get("target", ""))
                 dataset_mount = (
                     source == self.dataset_root
                     and target == "/datasets/tradix"
                     and mount.get("read_only") is True
                 )
+                tradix_mount = (
+                    bool(self.tradix_root)
+                    and source == self.tradix_root
+                    and target == "/workspace/repos/tradix"
+                    and mount.get("read_only") is True
+                )
                 try:
-                    inside = dataset_mount or (
-                        os.path.commonpath((source, self.host_data_root)) == self.host_data_root
+                    inside = (
+                        dataset_mount
+                        or tradix_mount
+                        or (
+                            posixpath.commonpath((source, self.host_data_root))
+                            == self.host_data_root
+                        )
                     )
                 except ValueError:
                     inside = dataset_mount
@@ -428,7 +521,7 @@ class ManagedAgentRenderer:
         for leaf in ("hermes", "home", "workspace", "managed"):
             worker_path = self.data_root / payload.slug / leaf
             worker_path.mkdir(parents=True, exist_ok=True)
-            with suppress(OSError):
+            with suppress(OSError, AttributeError):
                 os.chown(worker_path, -1, 10000)
                 worker_path.chmod(0o770)
         agent_root.mkdir(parents=True, exist_ok=True)
@@ -451,11 +544,12 @@ class ManagedAgentRenderer:
                 encoding="utf-8",
             )
             for secure_path in (github_config.parent, github_config, hosts_path):
-                with suppress(OSError):
+                with suppress(OSError, AttributeError):
                     os.chown(secure_path, 10000, 10000)
             github_config.parent.chmod(0o770)
             github_config.chmod(0o770)
             hosts_path.chmod(0o660)
+        template = self._validate_role_template(payload)
         manifest = payload.model_dump(mode="json")
         runtime_manifest = {
             "id": payload.role,
@@ -469,12 +563,11 @@ class ManagedAgentRenderer:
                 "mcp_tools", ["task_get", "task_comment", "task_block", "task_complete"]
             ),
             "capabilities": payload.capabilities,
-            "denied_capabilities": [
-                "docker_admin",
-                "secret_read",
-                "environment_promote",
-                "live_trade",
-            ],
+            "denied_capabilities": (
+                template.get("denied_capabilities", [])
+                if template is not None
+                else ["docker_admin", "secret_read", "environment_promote", "live_trade"]
+            ),
             "secret_refs": payload.secret_refs,
             "communication": payload.policy_set.get("communication", []),
             "mount_profile": payload.policy_set.get("mount_profile", "tradix-dataset-readonly"),
@@ -498,6 +591,14 @@ class ManagedAgentRenderer:
             json.dumps(runtime_manifest, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
+        loaded = self._role_template(payload.role)
+        if loaded is not None:
+            _, template_root = loaded
+            for name in ("SOUL.md", "foundation.md", "context.md"):
+                (self.data_root / payload.slug / "managed" / name).write_text(
+                    (template_root / name).read_text(encoding="utf-8"),
+                    encoding="utf-8",
+                )
         runtime_path = runtime_root / "runtime.env"
         runtime_token: str | None = None
         if runtime_path.exists():
@@ -520,7 +621,7 @@ class ManagedAgentRenderer:
                 + "\n",
                 encoding="utf-8",
             )
-        with suppress(OSError):
+        with suppress(OSError, AttributeError):
             os.chown(runtime_path, -1, 0)
             runtime_path.chmod(0o640)
         return hashlib.sha256(runtime_token.encode("utf-8")).hexdigest()

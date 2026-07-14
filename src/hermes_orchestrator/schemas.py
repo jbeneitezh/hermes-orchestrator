@@ -31,6 +31,7 @@ AgentRole = Literal[
     "validator",
     "operator",
     "data_steward",
+    "risk_manager",
     "trader",
 ]
 
