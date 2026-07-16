@@ -7,11 +7,12 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from hermes_orchestrator.config import Settings
 from hermes_orchestrator.main import create_app
-from hermes_orchestrator.models import Base
+from hermes_orchestrator.models import Approval, AuditEvent, Base
 from hermes_orchestrator.task_services import (
     LifecycleError,
     expire_due_runs,
@@ -294,6 +295,62 @@ def test_comment_and_cancel_are_durable_and_idempotent(lifecycle_context) -> Non
     assert replay.json()["replayed"] is True
     assert run.json()["status"] == "cancelled"
     assert different_cancel.status_code == 409
+
+
+def test_cancel_rejects_pending_approval_and_replay_repairs_historical_projection(
+    lifecycle_context,
+) -> None:
+    client, factory = lifecycle_context
+    task_id = create_task_api(client, "cancel-pending-approval-task").json()["id"]
+    run_id = dispatch_api(
+        client,
+        task_id,
+        "cancel-pending-approval-dispatch",
+        requires_approval=True,
+        approval_ttl_seconds=600,
+    ).json()["run"]["id"]
+    headers = LEADER | {"Idempotency-Key": "cancel-pending-approval-command"}
+
+    cancelled = client.post(
+        f"/v1/tasks/{task_id}/cancel",
+        headers=headers,
+        json={"reason": "La iniciativa fue sustituida"},
+    )
+    with factory() as session:
+        approval = session.scalar(select(Approval).where(Approval.run_id == uuid.UUID(run_id)))
+        assert approval is not None
+        approval.status = "pending"
+        approval.decided_by_actor_id = None
+        approval.decision_reason = None
+        approval.decision_idempotency_key = None
+        approval.decided_at = None
+        session.commit()
+
+    replay = client.post(
+        f"/v1/tasks/{task_id}/cancel",
+        headers=headers,
+        json={"reason": "La iniciativa fue sustituida"},
+    )
+
+    with factory() as session:
+        approval = session.scalar(select(Approval).where(Approval.run_id == uuid.UUID(run_id)))
+        events = list(
+            session.scalars(
+                select(AuditEvent).where(
+                    AuditEvent.aggregate_id == str(approval.id),
+                    AuditEvent.event_type == "approval.rejected",
+                )
+            )
+        )
+
+    assert cancelled.status_code == 200
+    assert replay.status_code == 200
+    assert replay.json()["replayed"] is True
+    assert approval.status == "rejected"
+    assert approval.decided_by_actor_id == "agent:leader"
+    assert approval.decision_reason == "Tarea cancelada: La iniciativa fue sustituida"
+    assert approval.decision_idempotency_key.startswith("cancel:")
+    assert len(events) == 2
 
 
 def test_watchdog_times_out_active_run(lifecycle_context) -> None:
