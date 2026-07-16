@@ -643,6 +643,50 @@ def add_comment(
     return LifecycleResult(comment)
 
 
+def _reject_pending_approvals_for_cancelled_task(
+    session: Session,
+    *,
+    task: Task,
+    actor_id: str,
+    idempotency_key: str,
+    reason: str,
+    decided_at: datetime,
+) -> int:
+    pending = list(
+        session.scalars(
+            select(Approval)
+            .join(Run, Run.id == Approval.run_id)
+            .where(Run.task_id == task.id, Approval.status == "pending")
+            .order_by(Approval.created_at)
+        )
+    )
+    for approval in pending:
+        approval.status = "rejected"
+        approval.decided_by_actor_id = actor_id
+        approval.decision_reason = f"Tarea cancelada: {reason}"
+        approval.decision_idempotency_key = "cancel:" + stable_hash(
+            {
+                "approval_id": str(approval.id),
+                "idempotency_key": idempotency_key,
+                "task_id": str(task.id),
+            }
+        )
+        approval.decided_at = decided_at
+        append_audit(
+            session,
+            actor_id=actor_id,
+            event_type="approval.rejected",
+            aggregate_type="approval",
+            aggregate_id=approval.id,
+            payload={
+                "reason": "task_cancelled",
+                "run_id": str(approval.run_id),
+                "task_id": str(task.id),
+            },
+        )
+    return len(pending)
+
+
 def cancel_task(
     session: Session,
     *,
@@ -658,6 +702,16 @@ def cancel_task(
     if task.cancel_idempotency_key is not None:
         if task.cancel_idempotency_key != idempotency_key:
             raise LifecycleError("already_cancelled", "La tarea ya está cancelada")
+        reconciled = _reject_pending_approvals_for_cancelled_task(
+            session,
+            task=task,
+            actor_id=actor_id,
+            idempotency_key=idempotency_key,
+            reason=reason,
+            decided_at=effective_now,
+        )
+        if reconciled:
+            session.commit()
         return LifecycleResult(task, replayed=True)
     if task.status == "completed":
         raise LifecycleError("invalid_transition", "Una tarea completada no puede cancelarse")
@@ -680,6 +734,14 @@ def cancel_task(
             settings=settings or Settings(),
             actor_id=actor_id,
         )
+    _reject_pending_approvals_for_cancelled_task(
+        session,
+        task=task,
+        actor_id=actor_id,
+        idempotency_key=idempotency_key,
+        reason=reason,
+        decided_at=effective_now,
+    )
     append_audit(
         session,
         actor_id=actor_id,
