@@ -11,13 +11,12 @@ from sqlalchemy.orm import Session
 
 from hermes_orchestrator.models import Agent, AgentInstance, AuditEvent, CommunicationEdge
 from hermes_orchestrator.provisioning import (
-    PROGRAM_ALLOWED_PROFILES,
-    PROGRAM_EXECUTION_PROFILE,
     WORKER_API_SECRET_PREFIX,
     AgentProvisioner,
     ProvisionerResult,
     ProvisioningError,
     ProvisioningPayload,
+    role_execution_profile,
 )
 from hermes_orchestrator.repositories import AgentRepository, AuditRepository
 from hermes_orchestrator.services import (
@@ -211,8 +210,8 @@ def provision_agent_request(
     agent.description = payload.description
     agent.desired_state = "active"
     agent.policy_set = payload.policy_set | {
-        "execution_profile_default": PROGRAM_EXECUTION_PROFILE,
-        "allowed_profiles": PROGRAM_ALLOWED_PROFILES,
+        "execution_profile_default": role_execution_profile(payload.role),
+        "allowed_profiles": [role_execution_profile(payload.role)],
         "managed_by": "agent-provisioner",
         "request_id": str(request.id),
         "runtime_auth_token_sha256": result.credential_sha256,
