@@ -57,10 +57,12 @@ ALLOWED_MOUNT_TARGETS = {
 PROGRAM_EXECUTION_PROFILE = "sol-high"
 PROGRAM_ALLOWED_PROFILES = [PROGRAM_EXECUTION_PROFILE]
 
+
 def role_execution_profile(role: str) -> str:
     return {"risk_manager": "astra-medium", "trader": "astra-medium"}.get(
         role, PROGRAM_EXECUTION_PROFILE
     )
+
 
 WORKER_API_SECRET_PREFIX = "secret://hermes/api-server/"
 ROLE_TEMPLATE_ROOT = (Path(__file__).parent / "agent_templates").resolve()
@@ -104,9 +106,7 @@ class ProvisioningPayload(BaseModel):
         visit(self.policy_set)
         expected_profile = role_execution_profile(self.role)
         expected_allowed = [expected_profile]
-        requested_default = self.policy_set.get(
-            "execution_profile_default", expected_profile
-        )
+        requested_default = self.policy_set.get("execution_profile_default", expected_profile)
         requested_allowed = self.policy_set.get("allowed_profiles", expected_allowed)
         if requested_default != expected_profile:
             raise ValueError(f"execution_profile_default debe ser {expected_profile}")
