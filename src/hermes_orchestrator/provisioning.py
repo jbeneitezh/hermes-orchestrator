@@ -56,6 +56,14 @@ ALLOWED_MOUNT_TARGETS = {
 }
 PROGRAM_EXECUTION_PROFILE = "sol-high"
 PROGRAM_ALLOWED_PROFILES = [PROGRAM_EXECUTION_PROFILE]
+
+
+def role_execution_profile(role: str) -> str:
+    return {"risk_manager": "astra-medium", "trader": "astra-medium"}.get(
+        role, PROGRAM_EXECUTION_PROFILE
+    )
+
+
 WORKER_API_SECRET_PREFIX = "secret://hermes/api-server/"
 ROLE_TEMPLATE_ROOT = (Path(__file__).parent / "agent_templates").resolve()
 KNOWLEDGE_DATASET_ROLES = {"data_steward", "risk_manager", "trader"}
@@ -96,14 +104,14 @@ class ProvisioningPayload(BaseModel):
                     visit(child)
 
         visit(self.policy_set)
-        requested_default = self.policy_set.get(
-            "execution_profile_default", PROGRAM_EXECUTION_PROFILE
-        )
-        requested_allowed = self.policy_set.get("allowed_profiles", PROGRAM_ALLOWED_PROFILES)
-        if requested_default != PROGRAM_EXECUTION_PROFILE:
-            raise ValueError(f"execution_profile_default debe ser {PROGRAM_EXECUTION_PROFILE}")
-        if requested_allowed != PROGRAM_ALLOWED_PROFILES:
-            raise ValueError(f"allowed_profiles debe ser exactamente {PROGRAM_ALLOWED_PROFILES}")
+        expected_profile = role_execution_profile(self.role)
+        expected_allowed = [expected_profile]
+        requested_default = self.policy_set.get("execution_profile_default", expected_profile)
+        requested_allowed = self.policy_set.get("allowed_profiles", expected_allowed)
+        if requested_default != expected_profile:
+            raise ValueError(f"execution_profile_default debe ser {expected_profile}")
+        if requested_allowed != expected_allowed:
+            raise ValueError(f"allowed_profiles debe ser exactamente {expected_allowed}")
         return self
 
 
@@ -563,8 +571,8 @@ class ManagedAgentRenderer:
             "role": payload.role,
             "description": payload.description,
             "workspace": "/workspace",
-            "execution_profile_default": PROGRAM_EXECUTION_PROFILE,
-            "allowed_profiles": PROGRAM_ALLOWED_PROFILES,
+            "execution_profile_default": role_execution_profile(payload.role),
+            "allowed_profiles": [role_execution_profile(payload.role)],
             "toolsets": payload.policy_set.get("toolsets", ["terminal_read", "files_read", "mcp"]),
             "mcp_tools": payload.policy_set.get(
                 "mcp_tools", ["task_get", "task_comment", "task_block", "task_complete"]

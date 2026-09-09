@@ -12,7 +12,11 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from hermes_orchestrator.config import Settings
 from hermes_orchestrator.models import Agent, AgentRequestRecord
-from hermes_orchestrator.provisioning import AgentProvisioner, ProvisioningError
+from hermes_orchestrator.provisioning import (
+    AgentProvisioner,
+    ProvisioningError,
+    role_execution_profile,
+)
 from hermes_orchestrator.provisioning_services import provision_agent_request
 from hermes_orchestrator.services import decide_agent_request
 
@@ -317,11 +321,14 @@ def evaluate_agent_request(
         return AgentPolicyDecision(
             "reject", "policy_name_not_allowlisted", "Nombre de policy no allowlisted"
         )
-    if policy_set.get("execution_profile_default", "sol-high") != "sol-high":
-        return AgentPolicyDecision("reject", "model_policy_denied", "El perfil debe ser sol-high")
-    if policy_set.get("allowed_profiles", ["sol-high"]) != ["sol-high"]:
+    expected_profile = role_execution_profile(profile.role)
+    if policy_set.get("execution_profile_default", expected_profile) != expected_profile:
         return AgentPolicyDecision(
-            "reject", "model_policy_denied", "El allowlist debe contener sólo sol-high"
+            "reject", "model_policy_denied", f"El perfil debe ser {expected_profile}"
+        )
+    if policy_set.get("allowed_profiles", [expected_profile]) != [expected_profile]:
+        return AgentPolicyDecision(
+            "reject", "model_policy_denied", f"El allowlist debe contener sólo {expected_profile}"
         )
     for key, allowed in (
         ("toolsets", profile.toolsets),

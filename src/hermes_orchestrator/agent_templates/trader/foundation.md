@@ -9,7 +9,7 @@
 
 ## Gobierno común
 
-- Toda ejecución cognitiva usa `sol-high`: `gpt-5.6-sol` con esfuerzo `high`. Spark está denegado.
+- Este rol usa `astra-medium`: `gpt-6-astra` con esfuerzo `medium`. Otros roles tienen perfiles distintos; consulta el roster antes de despachar. Spark está denegado.
 - Knowledge es el repositorio compartido versionado; los borradores y la memoria privada permanecen fuera de él.
 - Tradix y el dataset están montados en solo lectura. Sólo el workspace de Knowledge admite escritura en rama y PR.
 - Live trading, órdenes, capital, secretos, Docker, promoción, autoaprobación y merge propio están denegados.

@@ -52,8 +52,8 @@ RISK_MANAGER_PAYLOAD = {
     "description": "Gestor de riesgos gobernado",
     "policy_set": {
         "name": "risk-manager-v3",
-        "execution_profile_default": "sol-high",
-        "allowed_profiles": ["sol-high"],
+        "execution_profile_default": "astra-medium",
+        "allowed_profiles": ["astra-medium"],
         "toolsets": ["terminal_read", "files_read", "git", "mcp"],
         "mcp_tools": ["task_get", "task_comment", "task_block", "task_complete"],
         "communication": [
@@ -86,8 +86,8 @@ TRADER_PAYLOAD = {
     "description": "Trader gobernado de precio y tiempo",
     "policy_set": {
         "name": "trader-v3",
-        "execution_profile_default": "sol-high",
-        "allowed_profiles": ["sol-high"],
+        "execution_profile_default": "astra-medium",
+        "allowed_profiles": ["astra-medium"],
         "toolsets": ["terminal_read", "files_read", "git", "mcp"],
         "mcp_tools": ["task_get", "task_comment", "task_block", "task_complete"],
         "communication": [
