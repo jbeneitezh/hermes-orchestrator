@@ -242,6 +242,10 @@ class SwarmBackend:
                     "image": service["Spec"]["TaskTemplate"]["ContainerSpec"]["Image"],
                     "state": "running" if running else "pending",
                     "health": "healthy" if healthy else "unknown",
+                    "update_state": service.get("UpdateStatus", {}).get("State", "completed"),
+                    "task_image": running[0].get("Spec", {}).get("ContainerSpec", {}).get("Image")
+                    if len(running) == 1
+                    else None,
                     "spec_revision": running[0]
                     .get("Spec", {})
                     .get("ContainerSpec", {})
@@ -341,14 +345,20 @@ class SwarmBackend:
         else:
             self.request("POST", "/services/create", json=spec, headers=headers)
         expected = spec["TaskTemplate"]["ContainerSpec"]["Labels"]["io.hermes.fleet.spec"]
-        for _ in range(30):
+        stable_since = None
+        for _ in range(90):
             if any(
                 item["service"] == name
                 and item["health"] == "healthy"
                 and item.get("spec_revision") == expected
+                and item.get("update_state") == "completed"
                 for item in self.status()
             ):
-                break
+                stable_since = stable_since or time.monotonic()
+                if time.monotonic() - stable_since >= 30:
+                    break
+            else:
+                stable_since = None
             time.sleep(2)
         else:
             raise ValueError("worker Swarm sin health de la revisión solicitada")
@@ -373,7 +383,8 @@ class SwarmBackend:
             else None
         )
         was_stopped = saved is None or saved["Spec"]["Mode"]["Replicated"]["Replicas"] == 0
-        for _ in range(30):
+        stable_since = None
+        for _ in range(90):
             if was_stopped:
                 current = self.owned(name)
                 tasks = (
@@ -394,9 +405,14 @@ class SwarmBackend:
                 item["service"] == name
                 and item["health"] == "healthy"
                 and item.get("spec_revision") == expected
+                and item.get("update_state") == "completed"
                 for item in self.status()
             ):
-                return
+                stable_since = stable_since or time.monotonic()
+                if time.monotonic() - stable_since >= 30:
+                    return
+            else:
+                stable_since = None
             time.sleep(2)
         raise ValueError("restauración sin convergencia comprobada")
 
