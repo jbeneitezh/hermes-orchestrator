@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import threading
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -447,3 +448,96 @@ def test_lease_lost_fails_safe_before_persisting_remote_identity(session_factory
     assert stored.worker_run_id is None
     assert state.start_requests == 1
     assert state.idempotency_keys == [run.dispatch_idempotency_key]
+
+
+@pytest.mark.parametrize("status_code", [403, 503])
+@pytest.mark.parametrize("body_kind", ["json", "text", "html", "malformed", "unexpected_json"])
+def test_running_run_with_24_attempts_fails_safely_and_preserves_http_diagnostic(
+    session_factory, status_code, body_kind
+) -> None:
+    private = "datos-privados-del-worker"
+    bodies = {
+        "json": json.dumps(
+            {
+                "error": {
+                    "code": "worker_http_rejected",
+                    "message": "Acceso Bearer test-token",
+                    "private": private,
+                    "http_status": 200,
+                }
+            }
+        ),
+        "text": private,
+        "html": f"<html>{private}</html>",
+        "malformed": '{"error":{"message":"' + private,
+        "unexpected_json": json.dumps(
+            {"error": {"code": [private], "message": {"private": private}}}
+        ),
+    }
+    calls: list[tuple[str, str]] = []
+    stream_response = httpx.Response(
+        status_code, stream=httpx.ByteStream(bodies[body_kind].encode())
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append((request.method, request.url.path))
+        assert request.method == "GET", "No se debe iniciar ni detener ningún worker"
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "ok"})
+        if request.url.path == "/v1/capabilities":
+            return httpx.Response(200, json={"features": FEATURES})
+        if request.url.path == "/v1/runs/existing-run":
+            return httpx.Response(200, json={"run_id": "existing-run", "status": "running"})
+        assert request.url.path == "/v1/runs/existing-run/events"
+        return stream_response
+
+    run = create_run(session_factory, worker_run_id="existing-run")
+    with session_factory() as session:
+        stored = session.get(Run, run.id)
+        assert stored is not None
+        stored.status = "running"
+        stored.dispatch_attempts = 24
+        session.commit()
+    exhausted_settings = settings()
+    assert exhausted_settings.usage_max_retries == 1
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        service = RunDispatcher(
+            session_factory,
+            exhausted_settings,
+            adapter_factory=lambda endpoint, token: HermesRunsAdapter(
+                endpoint, token, client=client, max_reconnects=0
+            ),
+        )
+        result = service.run_once()[0]
+        assert result.action == result.status == "failed"
+        assert service.run_once() == []
+
+    assert calls == [
+        ("GET", "/health"),
+        ("GET", "/v1/capabilities"),
+        ("GET", "/v1/runs/existing-run"),
+        ("GET", "/v1/runs/existing-run/events"),
+    ]
+    assert stream_response.is_closed
+    with session_factory() as session:
+        stored = session.get(Run, run.id)
+        assert stored is not None and stored.status == "failed"
+        assert stored.worker_run_id == "existing-run"
+        # El claim suma un intento; no se reinicia ni se reduce el contador agotado.
+        assert stored.dispatch_attempts == 25
+        assert stored.lease_owner is stored.lease_acquired_at is stored.lease_expires_at is None
+        assert stored.heartbeat_at is None
+        assert stored.error_details["http_status"] == status_code
+        assert stored.error_details["retryable"] is (status_code == 503)
+        expected_message = (
+            "Acceso Bearer [REDACTED]" if body_kind == "json" else f"Hermes HTTP {status_code}"
+        )
+        assert stored.summary == stored.error_details["message"] == expected_message
+        assert stored.error_code == (
+            "worker_http_rejected" if body_kind == "json" else "transient_provider_error"
+        )
+        assert private not in json.dumps(stored.error_details)
+        assert "test-token" not in json.dumps(stored.error_details)
+        ledgers = list(session.scalars(select(UsageLedger).where(UsageLedger.run_id == run.id)))
+        assert len(ledgers) == 1
+        assert ledgers[0].outcome == "failed"

@@ -364,6 +364,8 @@ class RunDispatcher:
                 "message": error.detail if isinstance(error, DispatchError) else error.message,
                 "retryable": retryable,
             }
+            if isinstance(error, HermesAdapterError) and error.http_status is not None:
+                run.error_details = run.error_details | {"http_status": error.http_status}
             if isinstance(agent_handoff, dict):
                 run.error_details = run.error_details | {"agent_handoff": agent_handoff}
             session.commit()

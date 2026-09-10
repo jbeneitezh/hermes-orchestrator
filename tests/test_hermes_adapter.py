@@ -281,7 +281,10 @@ def test_stream_http_errors_are_read_normalized_and_redacted(
     assert error.retryable is retryable
     assert error.human_action_required is human_action_required
     assert error.retry_after == 2.5
-    assert error.message == "Fallo Bearer [REDACTED] api_key=[REDACTED]"
+    assert error.message == (
+        "Fallo Bearer [REDACTED] api_key=[REDACTED]" if json_body else f"Hermes HTTP {status_code}"
+    )
+    assert error.http_status == error.as_dict()["http_status"] == status_code
     assert response.is_stream_consumed
     assert response.is_closed
 
@@ -299,6 +302,76 @@ def test_successful_stream_returns_at_terminal_without_reading_remaining_body() 
 
     assert [event.event_type for event in events] == ["run.completed"]
     assert response.is_closed
+
+
+@pytest.mark.parametrize("status_code", [403, 503])
+@pytest.mark.parametrize("operation", ["start", "stream"])
+@pytest.mark.parametrize(
+    "body",
+    [
+        "datos-privados-del-worker",
+        "<html>datos-privados-del-worker</html>",
+        '{"error":{"message":"datos-privados-del-worker',
+        '{"error":"datos-privados-del-worker"}',
+        '{"error":{"message":{"private":"datos-privados-del-worker"},"code":["privado"]}}',
+        '["datos-privados-del-worker"]',
+        '"datos-privados-del-worker"',
+        '{"error":{"message":123,"code":456}}',
+        "",
+    ],
+)
+def test_http_diagnostic_discards_arbitrary_bodies_and_unexpected_json_fields(
+    status_code, operation, body
+) -> None:
+    response = httpx.Response(status_code, stream=httpx.ByteStream(body.encode()))
+    with httpx.Client(transport=httpx.MockTransport(lambda _: response)) as client:
+        adapter = HermesRunsAdapter("http://worker.invalid", "test-token", client=client)
+        with pytest.raises(HermesAdapterError) as captured:
+            if operation == "start":
+                adapter.start_run("test")
+            else:
+                adapter.stream_events("existing-run")
+
+    error = captured.value
+    assert error.message == str(error) == f"Hermes HTTP {status_code}"
+    assert error.code == "transient_provider_error"
+    assert error.http_status == error.as_dict()["http_status"] == status_code
+    assert error.retryable is (status_code == 503)
+    assert error.human_action_required is (status_code == 403)
+    assert "privado" not in json.dumps(error.as_dict())
+    assert response.is_closed
+
+
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_http_json_diagnostic_redacts_and_bounds_only_expected_strings(wrapped) -> None:
+    error_payload = {
+        "code": "synthetic-credential-" + "C" * 500,
+        "message": "Bearer synthetic-credential " + "M" * 1000,
+        "private": "datos-privados-del-worker",
+        "http_status": 200,
+    }
+    payload = {"error": error_payload} if wrapped else error_payload
+    with httpx.Client(
+        transport=httpx.MockTransport(lambda _: httpx.Response(503, json=payload))
+    ) as client:
+        adapter = HermesRunsAdapter("http://worker.invalid", "synthetic-credential", client=client)
+        with pytest.raises(HermesAdapterError) as captured:
+            adapter.stream_events("existing-run")
+
+    error = captured.value
+    assert error.http_status == error.as_dict()["http_status"] == 503
+    assert len(error.code) == 100
+    assert len(error.message) == 512
+    assert error.code.startswith("[REDACTED]-")
+    assert error.message.startswith("Bearer [REDACTED] ")
+    assert "synthetic-credential" not in json.dumps(error.as_dict())
+    assert "datos-privados-del-worker" not in json.dumps(error.as_dict())
+
+
+def test_non_http_adapter_error_does_not_invent_status() -> None:
+    error = HermesAdapterError("worker_disconnected", "SSE interrumpido", retryable=True)
+    assert error.http_status is None
+    assert "http_status" not in error.as_dict()
 
 
 @pytest.mark.parametrize("operation", ["start", "stream"])
