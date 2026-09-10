@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from typing import Any, Literal
 
@@ -50,6 +51,7 @@ BACKEND = os.environ.get("FLEET_BACKEND", "compose")
 if BACKEND not in {"compose", "swarm"}:
     raise ValueError("FLEET_BACKEND no permitido")
 SWARM = SwarmBackend(PROJECT) if BACKEND == "swarm" else None
+SWARM_LOCK = threading.Lock()
 
 
 def authorize(x_reconciler_token: str = Header(alias="X-Reconciler-Token")) -> None:
@@ -180,10 +182,11 @@ def reconcile(command: ReconcileCommand) -> dict[str, Any]:
         raise HTTPException(status_code=422, detail="worker service not allowed")
     if SWARM:
         try:
-            if command.action == "rollback":
-                SWARM.rollback(command.services)
-            else:
-                SWARM.apply(rendered, command.services)
+            with SWARM_LOCK:
+                if command.action == "rollback":
+                    SWARM.rollback(command.services)
+                else:
+                    SWARM.apply(rendered, command.services)
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
         return snapshot(command.action, ["config", "swarm " + command.action + " <workers>"])

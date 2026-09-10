@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import copy
+import hashlib
 import json
 import os
 import re
@@ -152,6 +153,9 @@ def service_spec(
         if network not in networks:
             raise ValueError("red de rol sin mapping overlay: " + network)
         attachments.append({"Target": networks[network], "Aliases": [name]})
+    effective = {"container": container, "networks": attachments, "node": node_id}
+    revision = hashlib.sha256(json.dumps(effective, sort_keys=True).encode()).hexdigest()
+    container["Labels"] = dict(container["Labels"], **{"io.hermes.fleet.spec": revision})
     return {
         "Name": f"{project}_{name}",
         "Labels": {"io.hermes.fleet.project": project, "io.hermes.fleet.worker": name},
@@ -238,6 +242,13 @@ class SwarmBackend:
                     "image": service["Spec"]["TaskTemplate"]["ContainerSpec"]["Image"],
                     "state": "running" if running else "pending",
                     "health": "healthy" if healthy else "unknown",
+                    "spec_revision": running[0]
+                    .get("Spec", {})
+                    .get("ContainerSpec", {})
+                    .get("Labels", {})
+                    .get("io.hermes.fleet.spec")
+                    if len(running) == 1
+                    else None,
                 }
             )
         return result
@@ -254,40 +265,140 @@ class SwarmBackend:
             )
             for name in names
         ]
+        for name in names:
+            for dependency in rendered["services"][name].get("depends_on", {}):
+                self.require_healthy_dependency(dependency)
         auth = {}
         if path := os.environ.get("FLEET_REGISTRY_AUTH_FILE"):
             auth = json.loads(Path(path).read_text())["auths"]
-        for name, spec, existing in plans:
-            host = spec["TaskTemplate"]["ContainerSpec"]["Image"].split("/", 1)[0]
-            headers = (
-                {
-                    "X-Registry-Auth": base64.urlsafe_b64encode(
-                        json.dumps(auth[host]).encode()
-                    ).decode()
-                }
-                if host in auth
-                else {}
+        completed = []
+        try:
+            for name, spec, existing in plans:
+                self._apply_one(name, spec, existing, auth)
+                completed.append((name, existing))
+        except (ValueError, httpx.HTTPError):
+            # Incluye el servicio fallido: puede haberse actualizado antes del error.
+            failures = []
+            for saved_name, saved in reversed([*completed, (name, existing)]):
+                try:
+                    self.restore(saved_name, saved)
+                except (ValueError, httpx.HTTPError):
+                    failures.append(saved_name)
+            detail = (
+                "restauración incompleta: " + ",".join(failures)
+                if failures
+                else "restauración comprobada"
             )
-            if existing:
-                self.request(
-                    "POST",
-                    f"/services/{existing['ID']}/update",
-                    params={"version": existing["Version"]["Index"]},
-                    json=spec,
-                    headers=headers,
+            raise ValueError("aplicación Swarm fallida; " + detail) from None
+
+    def require_healthy_dependency(self, name: str) -> None:
+        if not re.fullmatch(r"[a-z][a-z0-9-]{1,60}", name):
+            raise ValueError("dependencia inválida")
+        full_name = f"{self.project}_{name}"
+        services = self.request(
+            "GET", "/services", params={"filters": json.dumps({"name": [full_name]})}
+        )
+        exact = [item for item in services if item["Spec"]["Name"] == full_name]
+        if len(exact) != 1:
+            raise ValueError("dependencia Swarm ausente: " + name)
+        tasks = self.request(
+            "GET",
+            "/tasks",
+            params={
+                "filters": json.dumps({"service": [exact[0]["ID"]], "desired-state": ["running"]})
+            },
+        )
+        running = [item for item in tasks if item["Status"]["State"] == "running"]
+        if len(running) != 1:
+            raise ValueError("dependencia Swarm sin tarea única: " + name)
+        cid = running[0]["Status"].get("ContainerStatus", {}).get("ContainerID")
+        if (
+            not cid
+            or self.request("GET", f"/containers/{cid}/json")["State"]
+            .get("Health", {})
+            .get("Status")
+            != "healthy"
+        ):
+            raise ValueError("dependencia Swarm sin health verificado: " + name)
+
+    def _apply_one(
+        self, name: str, spec: dict[str, Any], existing: dict[str, Any] | None, auth: dict[str, Any]
+    ) -> None:
+        host = spec["TaskTemplate"]["ContainerSpec"]["Image"].split("/", 1)[0]
+        headers = (
+            {"X-Registry-Auth": base64.urlsafe_b64encode(json.dumps(auth[host]).encode()).decode()}
+            if host in auth
+            else {}
+        )
+        if existing:
+            self.request(
+                "POST",
+                f"/services/{existing['ID']}/update",
+                params={"version": existing["Version"]["Index"]},
+                json=spec,
+                headers=headers,
+            )
+        else:
+            self.request("POST", "/services/create", json=spec, headers=headers)
+        expected = spec["TaskTemplate"]["ContainerSpec"]["Labels"]["io.hermes.fleet.spec"]
+        for _ in range(30):
+            if any(
+                item["service"] == name
+                and item["health"] == "healthy"
+                and item.get("spec_revision") == expected
+                for item in self.status()
+            ):
+                break
+            time.sleep(2)
+        else:
+            raise ValueError("worker Swarm sin health de la revisión solicitada")
+
+    def restore(self, name: str, saved: dict[str, Any] | None) -> None:
+        if saved is None:
+            self.rollback([name])
+        elif current := self.owned(name):
+            self.request(
+                "POST",
+                f"/services/{current['ID']}/update",
+                params={"version": current["Version"]["Index"]},
+                json=saved["Spec"],
+            )
+        else:
+            raise ValueError("servicio desaparecido durante restauración")
+        expected = (
+            saved["Spec"]["TaskTemplate"]["ContainerSpec"]
+            .get("Labels", {})
+            .get("io.hermes.fleet.spec")
+            if saved
+            else None
+        )
+        was_stopped = saved is None or saved["Spec"]["Mode"]["Replicated"]["Replicas"] == 0
+        for _ in range(30):
+            if was_stopped:
+                current = self.owned(name)
+                tasks = (
+                    self.request(
+                        "GET",
+                        "/tasks",
+                        params={"filters": json.dumps({"service": [current["ID"]]})},
+                    )
+                    if current
+                    else []
                 )
-            else:
-                self.request("POST", "/services/create", json=spec, headers=headers)
-            for _ in range(30):
-                if any(
-                    item["service"] == name and item["health"] == "healthy"
-                    for item in self.status()
+                if not any(
+                    task["Status"]["State"] in {"running", "starting", "preparing"}
+                    for task in tasks
                 ):
-                    break
-                time.sleep(2)
-            else:
-                self.rollback([name])
-                raise ValueError("worker Swarm sin health verificado; rollback acotado aplicado")
+                    return
+            elif any(
+                item["service"] == name
+                and item["health"] == "healthy"
+                and item.get("spec_revision") == expected
+                for item in self.status()
+            ):
+                return
+            time.sleep(2)
+        raise ValueError("restauración sin convergencia comprobada")
 
     def rollback(self, names: list[str]) -> None:
         for name in names:

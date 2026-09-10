@@ -111,3 +111,77 @@ def test_rollback_preserves_service_and_data():
     assert calls[0][0] == ("POST", "/services/id/update")
     assert calls[0][1]["json"]["Mode"]["Replicated"]["Replicas"] == 0
     assert calls[0][1]["json"]["TaskTemplate"] == existing["Spec"]["TaskTemplate"]
+
+
+def test_revision_binds_node_and_network():
+    def revision(node, net):
+        return backend.service_spec(
+            "tradix-canary", "worker-developer", source(), node, {"developer-plane": net}
+        )["TaskTemplate"]["ContainerSpec"]["Labels"]["io.hermes.fleet.spec"]
+
+    assert len({revision("a", "a"), revision("b", "a"), revision("a", "b")}) == 3
+
+
+def test_old_healthy_task_does_not_certify_update(monkeypatch):
+    instance = backend.SwarmBackend("tradix-canary")
+    spec = backend.service_spec(
+        "tradix-canary", "worker-developer", source(), "node", {"developer-plane": "id"}
+    )
+    instance.request = lambda *args, **kwargs: None
+    instance.status = lambda: [
+        {"service": "worker-developer", "health": "healthy", "spec_revision": "old"}
+    ]
+    monkeypatch.setattr(backend.time, "sleep", lambda _: None)
+    with pytest.raises(ValueError, match="revisión"):
+        instance._apply_one("worker-developer", spec, None, {})
+
+
+def test_restore_failure_does_not_abandon_other_workers():
+    instance = backend.SwarmBackend("tradix-canary")
+    instance.node_id = "node"
+    instance.networks = {"developer-plane": "id"}
+    instance.owned = lambda _: None
+
+    def apply(name, *args):
+        if name == "worker-second":
+            raise ValueError("failed")
+
+    instance._apply_one = apply
+    restored = []
+
+    def restore(name, saved):
+        restored.append(name)
+        if name == "worker-second":
+            raise ValueError("restore failed")
+
+    instance.restore = restore
+    with pytest.raises(ValueError, match="incompleta"):
+        instance.apply(
+            {"services": {"worker-first": source(), "worker-second": source()}},
+            ["worker-first", "worker-second"],
+        )
+    assert restored == ["worker-second", "worker-first"]
+
+
+def test_missing_dependency_blocks_before_mutation():
+    instance = backend.SwarmBackend("tradix-canary")
+    instance.node_id = "node"
+    instance.networks = {"developer-plane": "id"}
+    calls = []
+
+    def request(method, path, **kwargs):
+        calls.append(method)
+        return []
+
+    instance.request = request
+    with pytest.raises(ValueError, match="ausente"):
+        instance.apply(
+            {
+                "services": {
+                    "worker-developer": source()
+                    | {"depends_on": {"codex-broker": {"condition": "service_healthy"}}}
+                }
+            },
+            ["worker-developer"],
+        )
+    assert calls and set(calls) == {"GET"}
