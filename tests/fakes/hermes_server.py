@@ -22,6 +22,7 @@ class FakeHermesState:
     healthy: bool = True
     features: dict[str, bool] = field(default_factory=lambda: dict(FEATURES))
     event_requests: int = 0
+    events_status_code: int = 200
     last_event_ids: list[str | None] = field(default_factory=list)
     status: str = "completed"
     start_requests: int = 0
@@ -108,6 +109,12 @@ class FakeHermesServer:
                 if self.path == "/v1/runs/fake-run/events":
                     state.event_requests += 1
                     state.last_event_ids.append(self.headers.get("Last-Event-ID"))
+                    if state.events_status_code != 200:
+                        self.send_json(
+                            state.events_status_code,
+                            {"error": {"code": "stream_rejected", "message": "SSE no disponible"}},
+                        )
+                        return
                     self.send_response(200)
                     self.send_header("Content-Type", "text/event-stream")
                     self.end_headers()

@@ -352,21 +352,21 @@ class RunDispatcher:
         with self.session_factory() as session:
             run = get_run(session, run_id)
             attempts = run.dispatch_attempts
-        max_attempts = self.settings.usage_max_retries + 1
-        if retryable and attempts < max_attempts:
-            self._release(run_id)
-            return DispatchResult(run_id, "retry_scheduled", self._status(run_id))
-        with self.session_factory() as session:
-            run = get_run(session, run_id)
             agent_handoff = run.error_details.get("agent_handoff")
             run.error_details = {
                 "code": error.code,
                 "message": error.detail if isinstance(error, DispatchError) else error.message,
                 "retryable": retryable,
             }
+            if isinstance(error, HermesAdapterError) and error.http_status is not None:
+                run.error_details = run.error_details | {"http_status": error.http_status}
             if isinstance(agent_handoff, dict):
                 run.error_details = run.error_details | {"agent_handoff": agent_handoff}
             session.commit()
+            max_attempts = self.settings.usage_max_retries + 1
+            if retryable and attempts < max_attempts:
+                self._release(run_id)
+                return DispatchResult(run_id, "retry_scheduled", self._status(run_id))
             if run.status in {"dispatching", "running"}:
                 run = transition_run(
                     session,

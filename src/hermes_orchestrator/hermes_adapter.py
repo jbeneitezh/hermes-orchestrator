@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from typing import Any, cast
 
 import httpx
@@ -18,6 +21,8 @@ REQUIRED_FEATURES = {
 TERMINAL_EVENTS = {"run.completed", "run.failed", "run.cancelled"}
 TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
 SENSITIVE_KEY_PARTS = ("authorization", "password", "secret", "api_key", "access_token")
+MAX_HTTP_ERROR_CODE_LENGTH = 100
+MAX_HTTP_ERROR_MESSAGE_LENGTH = 512
 
 
 class HermesAdapterError(Exception):
@@ -29,6 +34,7 @@ class HermesAdapterError(Exception):
         retryable: bool = False,
         retry_after: float | None = None,
         human_action_required: bool = False,
+        http_status: int | None = None,
     ) -> None:
         super().__init__(message)
         self.code = code
@@ -36,15 +42,19 @@ class HermesAdapterError(Exception):
         self.retryable = retryable
         self.retry_after = retry_after
         self.human_action_required = human_action_required
+        self.http_status = http_status
 
     def as_dict(self) -> dict[str, Any]:
-        return {
+        details: dict[str, Any] = {
             "code": self.code,
             "message": self.message,
             "retryable": self.retryable,
             "retry_after": self.retry_after,
             "human_action_required": self.human_action_required,
         }
+        if self.http_status is not None:
+            details["http_status"] = self.http_status
+        return details
 
 
 class WorkerUnhealthyError(HermesAdapterError):
@@ -160,7 +170,8 @@ class HermesRunsAdapter:
         try:
             payload = response.json()
         except ValueError:
-            payload = {"error": {"message": response.text}}
+            # Un cuerpo arbitrario puede contener datos privados sin claves redactables.
+            return {}
         if not isinstance(payload, dict):
             return {"data": payload}
         return payload
@@ -168,20 +179,53 @@ class HermesRunsAdapter:
     def _raise_for_response(self, response: httpx.Response) -> None:
         if response.is_success:
             return
-        payload = self.redact(self._json(response))
+        # Las respuestas de client.stream no cargan el cuerpo antes de acceder al JSON.
+        try:
+            response.read()
+            payload = self._json(response)
+        except (httpx.TransportError, httpx.DecodingError):
+            # El status ya es conocido: no publicar el cuerpo parcial ni la excepción.
+            payload = {}
         error = payload.get("error", payload)
         code = error.get("code") if isinstance(error, dict) else None
-        message = error.get("message") if isinstance(error, dict) else str(error)
-        retry_after_header = response.headers.get("Retry-After")
-        retry_after = float(retry_after_header) if retry_after_header else None
-        normalized_code = str(code or "transient_provider_error")
+        message = error.get("message") if isinstance(error, dict) else None
+        retry_after = self._parse_retry_after(response.headers.get("Retry-After"))
+        normalized_code = (
+            self._redact_string(code)[:MAX_HTTP_ERROR_CODE_LENGTH]
+            if isinstance(code, str) and code
+            else "transient_provider_error"
+        )
+        normalized_message = (
+            self._redact_string(message)[:MAX_HTTP_ERROR_MESSAGE_LENGTH]
+            if isinstance(message, str) and message
+            else f"Hermes HTTP {response.status_code}"
+        )
         raise HermesAdapterError(
             normalized_code,
-            str(message or f"Hermes HTTP {response.status_code}"),
+            normalized_message,
             retryable=response.status_code >= 500 or response.status_code == 429,
             retry_after=retry_after,
             human_action_required=response.status_code in {401, 403},
+            http_status=response.status_code,
         )
+
+    @staticmethod
+    def _parse_retry_after(value: str | None) -> float | None:
+        """Convierte segundos o fecha HTTP sin ocultar el error con una cabecera inválida."""
+
+        if not value:
+            return None
+        try:
+            seconds = float(value)
+        except ValueError:
+            try:
+                deadline = parsedate_to_datetime(value)
+                if deadline.tzinfo is None:
+                    deadline = deadline.replace(tzinfo=UTC)
+                return max(0.0, (deadline - datetime.now(UTC)).total_seconds())
+            except (ValueError, TypeError, OverflowError):
+                return None
+        return seconds if math.isfinite(seconds) and seconds >= 0 else None
 
     def discover(self) -> dict[str, Any]:
         try:
