@@ -17,6 +17,22 @@ import httpx
 TERMINAL_TASK_STATES = {"complete", "shutdown", "failed", "rejected", "remove", "orphaned"}
 
 
+def registry_auth(entry: dict[str, Any], host: str) -> str:
+    """Docker config almacena auth; Engine requiere campos AuthConfig explícitos."""
+    value = {key: entry[key] for key in ("username", "password", "identitytoken") if key in entry}
+    if "auth" in entry:
+        try:
+            decoded = base64.b64decode(entry["auth"], validate=True).decode()
+            username, separator, password = decoded.partition(":")
+            if not separator:
+                raise ValueError
+        except (ValueError, UnicodeError) as error:
+            raise ValueError("credencial registry con formato inválido") from error
+        value.update(username=username, password=password)
+    value["serveraddress"] = host
+    return base64.urlsafe_b64encode(json.dumps(value).encode()).decode()
+
+
 def duration(value: str | int) -> int:
     if isinstance(value, int):
         return value
@@ -331,11 +347,7 @@ class SwarmBackend:
         self, name: str, spec: dict[str, Any], existing: dict[str, Any] | None, auth: dict[str, Any]
     ) -> None:
         host = spec["TaskTemplate"]["ContainerSpec"]["Image"].split("/", 1)[0]
-        headers = (
-            {"X-Registry-Auth": base64.urlsafe_b64encode(json.dumps(auth[host]).encode()).decode()}
-            if host in auth
-            else {}
-        )
+        headers = {"X-Registry-Auth": registry_auth(auth[host], host)} if host in auth else {}
         if existing:
             self.request(
                 "POST",

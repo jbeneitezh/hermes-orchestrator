@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import base64
 import importlib.util
+import json
 from pathlib import Path
 
 import pytest
@@ -12,6 +14,17 @@ assert SPEC and SPEC.loader
 backend = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(backend)
 IMAGE = "192.168.1.197:5443/tradix/worker-canary@sha256:" + "a" * 64
+
+
+def test_registry_config_auth_is_normalized_for_engine():
+    encoded = backend.registry_auth(
+        {"auth": base64.b64encode(b"fixture:fixture:with-colon").decode()}, "registry.test"
+    )
+    assert json.loads(base64.urlsafe_b64decode(encoded)) == {
+        "username": "fixture",
+        "password": "fixture:with-colon",
+        "serveraddress": "registry.test",
+    }
 
 
 def source():
