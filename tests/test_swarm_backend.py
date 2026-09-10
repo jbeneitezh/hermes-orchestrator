@@ -127,6 +127,24 @@ def test_revision_binds_node_and_network():
     assert len({revision("a", "a"), revision("b", "a"), revision("a", "b")}) == 3
 
 
+@pytest.mark.parametrize("state", ["new", "pending", "assigned", "accepted", "ready"])
+def test_rollback_waits_for_terminal_task_state(monkeypatch, state):
+    instance = backend.SwarmBackend("tradix-canary")
+    instance.owned = lambda _: {"ID": "id", "Version": {"Index": 1}, "Spec": {"Mode": {}}}
+    observed = []
+
+    def request(method, path, **kwargs):
+        if path == "/tasks":
+            observed.append(state)
+            return [{"Status": {"State": state if len(observed) == 1 else "shutdown"}}]
+        return None
+
+    instance.request = request
+    monkeypatch.setattr(backend.time, "sleep", lambda _: None)
+    instance.rollback(["worker-developer"])
+    assert len(observed) == 2
+
+
 def test_old_healthy_task_does_not_certify_update(monkeypatch):
     instance = backend.SwarmBackend("tradix-canary")
     spec = backend.service_spec(

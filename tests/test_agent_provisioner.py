@@ -1258,3 +1258,28 @@ def test_resultado_fleet_incierto_conserva_definicion(renderer_context, monkeypa
         renderer.rollback(payload, fleet)
     assert stopped.value.code == "fleet_rollback_uncertain"
     assert renderer.compose_path.read_text(encoding="utf-8") == before
+
+
+def test_reintento_tras_incertidumbre_reconcilia_desde_marca_persistida(renderer_context):
+    renderer, _, managed, data = renderer_context
+    payload = provisioning_payload()
+
+    class UncertainFleet(FakeFleet):
+        def apply(self, services):
+            raise FleetOperationUncertain("timeout")
+
+    with pytest.raises(ProvisioningError):
+        renderer.apply(payload, UncertainFleet())
+    restarted = ManagedAgentRenderer(
+        managed_root=managed,
+        data_root=data,
+        host_data_root="/host_mnt/agent-data",
+        dataset_root="/host_mnt/tradix/dataset",
+        worker_image="hermes-worker:test",
+        project_name="hermes-test",
+    )
+    fleet = FakeFleet()
+    assert restarted.apply(payload, fleet).status == "applied"
+    assert fleet.apply_calls == [[f"worker-{payload.slug}"]]
+    assert restarted.apply(payload, fleet).status == "no_change"
+    assert len(fleet.apply_calls) == 1

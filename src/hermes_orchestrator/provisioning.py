@@ -654,7 +654,8 @@ class ManagedAgentRenderer:
         self.validate_document(document)
         current = json.dumps(document, sort_keys=True, separators=(",", ":"))
         credential_sha256 = self._write_agent_files(payload)
-        if current == previous:
+        pending_path = self.managed_root / f".{service_name}.fleet-pending"
+        if current == previous and not pending_path.exists():
             runner_result = fleet.status()
             health = (
                 "healthy"
@@ -672,6 +673,9 @@ class ManagedAgentRenderer:
                 credential_sha256=credential_sha256,
                 runner_result=runner_result,
             )
+        # Persistir intención antes de mutar: un reintento tras timeout o caída
+        # debe reconciliar aunque la definición deseada ya esté escrita.
+        pending_path.touch(exist_ok=True)
         self.compose_path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
         try:
             runner_result = fleet.apply([service_name])
@@ -689,6 +693,7 @@ class ManagedAgentRenderer:
             raise ProvisioningError(
                 "fleet_apply_failed", "Fleet reconciler no pudo aplicar el worker", 503
             ) from error
+        pending_path.unlink(missing_ok=True)
         health = (
             "healthy"
             if any(
@@ -719,6 +724,8 @@ class ManagedAgentRenderer:
                 config_digest=self._digest(document),
                 health="stopped",
             )
+        pending_path = self.managed_root / f".{service_name}.fleet-pending"
+        pending_path.touch(exist_ok=True)
         try:
             runner_result = fleet.rollback([service_name])
         except FleetOperationUncertain as error:
@@ -728,6 +735,7 @@ class ManagedAgentRenderer:
         del services[service_name]
         self.validate_document(document)
         self.compose_path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+        pending_path.unlink(missing_ok=True)
         return ProvisionerResult(
             status="rolled_back",
             service_name=service_name,

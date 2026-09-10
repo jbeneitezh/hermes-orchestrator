@@ -14,6 +14,8 @@ from typing import Any
 
 import httpx
 
+TERMINAL_TASK_STATES = {"complete", "shutdown", "failed", "rejected", "remove", "orphaned"}
+
 
 def duration(value: str | int) -> int:
     if isinstance(value, int):
@@ -396,10 +398,7 @@ class SwarmBackend:
                     if current
                     else []
                 )
-                if not any(
-                    task["Status"]["State"] in {"running", "starting", "preparing"}
-                    for task in tasks
-                ):
+                if not any(task["Status"]["State"] not in TERMINAL_TASK_STATES for task in tasks):
                     return
             elif any(
                 item["service"] == name
@@ -435,8 +434,7 @@ class SwarmBackend:
                         params={"filters": json.dumps({"service": [existing["ID"]]})},
                     )
                     if not any(
-                        task["Status"]["State"] in {"running", "starting", "preparing"}
-                        for task in tasks
+                        task["Status"]["State"] not in TERMINAL_TASK_STATES for task in tasks
                     ):
                         break
                     time.sleep(2)
