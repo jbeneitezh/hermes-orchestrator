@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import uuid
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -237,3 +239,62 @@ def test_transport_and_stream_exhaustion_are_normalized() -> None:
         stream_adapter.stream_events("run")
     assert disconnected_error.value.code == "worker_disconnected"
     stream_client.close()
+
+
+@pytest.mark.parametrize(
+    ("status_code", "retryable", "human_action_required"),
+    [
+        (400, False, False),
+        (401, False, True),
+        (403, False, True),
+        (429, True, False),
+        (500, True, False),
+        (503, True, False),
+    ],
+)
+@pytest.mark.parametrize("json_body", [True, False])
+def test_stream_http_errors_are_read_normalized_and_redacted(
+    status_code: int, retryable: bool, human_action_required: bool, json_body: bool
+) -> None:
+    message = "Fallo Bearer synthetic-stream-credential api_key=synthetic-query-credential"
+    body = (
+        json.dumps({"error": {"code": "stream_rejected", "message": message}})
+        if json_body
+        else message
+    )
+    response = httpx.Response(
+        status_code,
+        headers={"Retry-After": "2.5"},
+        stream=httpx.ByteStream(body.encode()),
+    )
+    assert not response.is_stream_consumed
+    with httpx.Client(transport=httpx.MockTransport(lambda _: response)) as client:
+        adapter = HermesRunsAdapter(
+            "http://worker.invalid", "synthetic-stream-credential", client=client
+        )
+        with pytest.raises(HermesAdapterError) as captured:
+            adapter.stream_events("run")
+
+    error = captured.value
+    assert error.code == ("stream_rejected" if json_body else "transient_provider_error")
+    assert error.retryable is retryable
+    assert error.human_action_required is human_action_required
+    assert error.retry_after == 2.5
+    assert error.message == "Fallo Bearer [REDACTED] api_key=[REDACTED]"
+    assert response.is_stream_consumed
+    assert response.is_closed
+
+
+def test_successful_stream_returns_at_terminal_without_reading_remaining_body() -> None:
+    class OpenEndedStream(httpx.SyncByteStream):
+        def __iter__(self) -> Iterator[bytes]:
+            yield b'id: 1\nevent: run.completed\ndata: {"status":"completed"}\n\n'
+            raise AssertionError("El stream no debe consumirse tras el evento terminal")
+
+    response = httpx.Response(200, stream=OpenEndedStream())
+    with httpx.Client(transport=httpx.MockTransport(lambda _: response)) as client:
+        adapter = HermesRunsAdapter("http://worker.invalid", "test-token", client=client)
+        events = adapter.stream_events("run")
+
+    assert [event.event_type for event in events] == ["run.completed"]
+    assert response.is_closed

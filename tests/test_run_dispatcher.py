@@ -303,6 +303,46 @@ def test_retry_reuses_worker_run_id_and_does_not_post_twice(session_factory) -> 
     assert len([event for event in events if event.worker_event_id == "1"]) == 0
 
 
+@pytest.mark.parametrize("status_code", [403, 429, 503])
+def test_stream_http_error_is_handled_without_losing_remote_run(
+    session_factory, status_code
+) -> None:
+    state = FakeHermesState(status="running", events_status_code=status_code)
+    with FakeHermesServer(state) as server:
+        run = create_run(session_factory)
+        service = dispatcher(session_factory, server)
+        first = service.run_once()[0]
+        with session_factory() as session:
+            stored = session.get(Run, run.id)
+            assert stored is not None
+            assert stored.worker_run_id == "fake-run"
+            assert stored.lease_owner is None
+            if status_code == 403:
+                assert first.action == "failed"
+                assert stored.status == "failed"
+                assert stored.error_code == "stream_rejected"
+                assert stored.error_details["message"] == "SSE no disponible"
+            else:
+                assert first.action == "retry_scheduled"
+                assert stored.status == "running"
+
+        state.events_status_code = 200
+        state.status = "completed"
+        resumed = service.run_once()
+
+    if status_code == 403:
+        assert resumed == []
+    else:
+        assert len(resumed) == 1
+        assert resumed[0].status == "completed"
+    assert state.start_requests == 1
+    assert state.event_requests == 1
+    with session_factory() as session:
+        ledgers = list(session.scalars(select(UsageLedger).where(UsageLedger.run_id == run.id)))
+        assert len(ledgers) == 1
+        assert ledgers[0].outcome == ("failed" if status_code == 403 else "completed")
+
+
 def test_lease_lost_fails_safe_before_persisting_remote_identity(session_factory) -> None:
     state = FakeHermesState()
     with FakeHermesServer(state) as server:

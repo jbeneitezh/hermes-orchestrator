@@ -168,6 +168,8 @@ class HermesRunsAdapter:
     def _raise_for_response(self, response: httpx.Response) -> None:
         if response.is_success:
             return
+        # Las respuestas de client.stream no cargan el cuerpo antes de acceder al JSON.
+        response.read()
         payload = self.redact(self._json(response))
         error = payload.get("error", payload)
         code = error.get("code") if isinstance(error, dict) else None
