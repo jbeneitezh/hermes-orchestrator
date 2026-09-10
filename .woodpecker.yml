@@ -1,0 +1,55 @@
+labels:
+  node: manager
+when:
+  - event: [push, pull_request, manual]
+steps:
+  - name: secrets-scan
+    image: zricethezav/gitleaks:v8.30.1
+    commands:
+      - gitleaks dir . --no-banner --redact
+  - name: quality
+    image: python:3.13-slim
+    environment:
+      UV_LINK_MODE: copy
+      UV_PYTHON_PREFERENCE: only-system
+    commands:
+      - pip install --disable-pip-version-check uv==0.11.28
+      - uv sync --locked
+      - uv run ruff check .
+      - uv run ruff format --check .
+      - uv run mypy src
+      - uv run pytest
+  - name: publish-orchestrator-canary
+    image: docker.io/woodpeckerci/plugin-docker-buildx:6.1.1
+    settings:
+      registry: https://host.docker.internal:5443
+      repo: host.docker.internal:5443/tradix/orchestrator-canary
+      dockerfile: Dockerfile
+      platforms: linux/amd64
+      tags: ${CI_COMMIT_SHA}
+      build_args:
+        VCS_REF: ${CI_COMMIT_SHA}
+      username:
+        from_secret: registry_username
+      password:
+        from_secret: registry_password
+    when:
+      - event: [push, manual]
+        branch: [master, codex/cicd-woodpecker-20260910]
+  - name: publish-fleet-canary
+    image: docker.io/woodpeckerci/plugin-docker-buildx:6.1.1
+    settings:
+      registry: https://host.docker.internal:5443
+      repo: host.docker.internal:5443/tradix/fleet-canary
+      dockerfile: Dockerfile.fleet-reconciler
+      platforms: linux/amd64
+      tags: ${CI_COMMIT_SHA}
+      build_args:
+        VCS_REF: ${CI_COMMIT_SHA}
+      username:
+        from_secret: registry_username
+      password:
+        from_secret: registry_password
+    when:
+      - event: [push, manual]
+        branch: [master, codex/cicd-woodpecker-20260910]

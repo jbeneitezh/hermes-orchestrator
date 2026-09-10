@@ -1,4 +1,3 @@
-FROM ghcr.io/astral-sh/uv:0.11.28 AS uv
 
 FROM python:3.13-slim
 
@@ -9,7 +8,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-COPY --from=uv /uv /uvx /bin/
+RUN pip install --no-cache-dir uv==0.11.28
 COPY pyproject.toml uv.lock README.md ./
 RUN uv sync --locked --no-dev --no-install-project
 
@@ -20,6 +19,9 @@ RUN uv sync --locked --no-dev --no-editable
 
 RUN useradd --create-home --uid 10001 orchestrator && chown -R orchestrator:orchestrator /app
 USER orchestrator
+
+ARG VCS_REF
+LABEL org.opencontainers.image.source="https://github.com/jbeneitezh/hermes-orchestrator" org.opencontainers.image.revision=$VCS_REF
 
 EXPOSE 8080
 

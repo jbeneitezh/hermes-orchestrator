@@ -5,11 +5,15 @@ import hmac
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
+
+sys.path.insert(0, str(Path(__file__).parent))
+from swarm_backend import SwarmBackend, service_spec
 
 
 class ReconcileCommand(BaseModel):
@@ -42,6 +46,10 @@ if MANAGED_COMPOSE_RAW:
     BASE_COMMAND.extend(["--file", MANAGED_COMPOSE_RAW])
 
 app = FastAPI(title="Hermes Fleet Reconciler", docs_url=None, redoc_url=None)
+BACKEND = os.environ.get("FLEET_BACKEND", "compose")
+if BACKEND not in {"compose", "swarm"}:
+    raise ValueError("FLEET_BACKEND no permitido")
+SWARM = SwarmBackend(PROJECT) if BACKEND == "swarm" else None
 
 
 def authorize(x_reconciler_token: str = Header(alias="X-Reconciler-Token")) -> None:
@@ -126,7 +134,7 @@ def parse_ps(raw: str) -> list[dict[str, Any]]:
 
 def snapshot(action: str, commands: list[str]) -> dict[str, Any]:
     rendered, digest = rendered_compose()
-    services = parse_ps(run_command(["ps", "--format", "json"]))
+    services = SWARM.status() if SWARM else parse_ps(run_command(["ps", "--format", "json"]))
     return {
         "action": action,
         "project_name": PROJECT,
@@ -134,6 +142,7 @@ def snapshot(action: str, commands: list[str]) -> dict[str, Any]:
         "services": services,
         "configured_services": sorted(rendered["services"]),
         "commands": commands,
+        "backend": BACKEND,
     }
 
 
@@ -153,6 +162,13 @@ def reconcile(command: ReconcileCommand) -> dict[str, Any]:
     if command.action == "plan":
         if command.services:
             raise HTTPException(status_code=422, detail="plan does not accept services")
+        if SWARM:
+            try:
+                for name, service in rendered["services"].items():
+                    if name.startswith("worker-"):
+                        service_spec(PROJECT, name, service, SWARM.node_id, SWARM.networks)
+            except ValueError as error:
+                raise HTTPException(status_code=422, detail=str(error)) from error
         return snapshot("plan", ["config", "ps"])
     configured = set(rendered["services"])
     if (
@@ -162,6 +178,15 @@ def reconcile(command: ReconcileCommand) -> dict[str, Any]:
         or any(service not in configured for service in command.services)
     ):
         raise HTTPException(status_code=422, detail="worker service not allowed")
+    if SWARM:
+        try:
+            if command.action == "rollback":
+                SWARM.rollback(command.services)
+            else:
+                SWARM.apply(rendered, command.services)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        return snapshot(command.action, ["config", "swarm " + command.action + " <workers>"])
     if command.action == "rollback":
         run_command(["stop", *command.services], timeout=300)
         run_command(["rm", "--force", "--stop", *command.services], timeout=300)
