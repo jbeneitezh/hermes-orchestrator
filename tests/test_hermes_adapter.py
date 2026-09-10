@@ -5,6 +5,7 @@ import uuid
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 import httpx
 import pytest
@@ -297,4 +298,52 @@ def test_successful_stream_returns_at_terminal_without_reading_remaining_body() 
         events = adapter.stream_events("run")
 
     assert [event.event_type for event in events] == ["run.completed"]
+    assert response.is_closed
+
+
+@pytest.mark.parametrize("operation", ["start", "stream"])
+@pytest.mark.parametrize(
+    ("header", "expected"),
+    [
+        (None, None),
+        ("", None),
+        ("120", 120.0),
+        (" 2.5 ", 2.5),
+        ("0", 0.0),
+        ("Thu, 10 Sep 2026 12:02:00 GMT", 120.0),
+        ("Thu, 10 Sep 2026 11:59:00 GMT", 0.0),
+        ("Thursday, 10-Sep-26 12:02:00 GMT", 120.0),
+        ("Thu Sep 10 12:02:00 2026", 120.0),
+        ("invalid-date", None),
+        ("Thu, 99 Sep 2026 12:02:00 GMT", None),
+        ("Thu, 10 Sep 999999999 12:02:00 GMT", None),
+        ("-1", None),
+        ("NaN", None),
+        ("Infinity", None),
+        ("-Infinity", None),
+        ("1e9999", None),
+    ],
+)
+def test_retry_after_is_normalized_without_masking_http_error(operation, header, expected) -> None:
+    response = httpx.Response(
+        429,
+        headers={"Retry-After": header} if header is not None else {},
+        stream=httpx.ByteStream(b'{"error":{"code":"rate_limited","message":"Ocupado"}}'),
+    )
+    with (
+        patch("hermes_orchestrator.hermes_adapter.datetime") as clock,
+        httpx.Client(transport=httpx.MockTransport(lambda _: response)) as client,
+    ):
+        clock.now.return_value = datetime(2026, 9, 10, 12, tzinfo=UTC)
+        adapter = HermesRunsAdapter("http://worker.invalid", "test-token", client=client)
+        with pytest.raises(HermesAdapterError) as captured:
+            if operation == "start":
+                adapter.start_run("test")
+            else:
+                adapter.stream_events("run")
+
+    assert captured.value.code == "rate_limited"
+    assert captured.value.message == "Ocupado"
+    assert captured.value.retryable is True
+    assert captured.value.retry_after == expected
     assert response.is_closed

@@ -5,6 +5,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import httpx
 import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
@@ -29,7 +30,7 @@ from hermes_orchestrator.run_dispatcher import (
     WorkerResolver,
     build_run_input,
 )
-from tests.fakes.hermes_server import FakeHermesServer, FakeHermesState
+from tests.fakes.hermes_server import FEATURES, FakeHermesServer, FakeHermesState
 
 SECRET_REF = f"{WORKER_SECRET_PREFIX}developer"
 
@@ -341,6 +342,87 @@ def test_stream_http_error_is_handled_without_losing_remote_run(
         ledgers = list(session.scalars(select(UsageLedger).where(UsageLedger.run_id == run.id)))
         assert len(ledgers) == 1
         assert ledgers[0].outcome == ("failed" if status_code == 403 else "completed")
+
+
+@pytest.mark.parametrize("retry_after", ["Thu, 10 Sep 2026 12:02:00 GMT", "invalid-date"])
+def test_retry_after_does_not_abort_batch_and_reopens_each_remote_stream(
+    session_factory, retry_after
+) -> None:
+    remote_statuses: dict[str, str] = {}
+    event_requests: dict[str, int] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/health":
+            return httpx.Response(200, json={"status": "ok"})
+        if path == "/v1/capabilities":
+            return httpx.Response(200, json={"features": FEATURES})
+        if request.method == "POST" and path == "/v1/runs":
+            remote_id = f"batch-run-{len(remote_statuses) + 1}"
+            remote_statuses[remote_id] = "running"
+            return httpx.Response(202, json={"run_id": remote_id})
+        remote_id = path.split("/")[3]
+        assert remote_id in remote_statuses
+        if path.endswith("/events"):
+            event_requests[remote_id] = event_requests.get(remote_id, 0) + 1
+            if event_requests[remote_id] == 1:
+                return httpx.Response(
+                    429,
+                    headers={"Retry-After": retry_after},
+                    stream=httpx.ByteStream(b'{"error":{"code":"rate_limited"}}'),
+                )
+            remote_statuses[remote_id] = "completed"
+            return httpx.Response(
+                200,
+                stream=httpx.ByteStream(
+                    b'id: 1\nevent: run.completed\ndata: {"status":"completed"}\n\n'
+                ),
+            )
+        return httpx.Response(
+            200,
+            json={
+                "run_id": remote_id,
+                "status": remote_statuses[remote_id],
+                "output": "BATCH_OK",
+                "effective_model": "gpt-5.3-codex-spark",
+                "effective_provider": "openai-api",
+                "effective_reasoning_effort": "low",
+                "usage": {"prompt_tokens": 7},
+            },
+        )
+
+    runs = [create_run(session_factory), create_run(session_factory)]
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        service = RunDispatcher(
+            session_factory,
+            settings().model_copy(update={"run_dispatcher_batch_size": 2}),
+            adapter_factory=lambda endpoint, token: HermesRunsAdapter(
+                endpoint, token, client=client, max_reconnects=0
+            ),
+        )
+        assert [result.action for result in service.run_once()] == ["retry_scheduled"] * 2
+        with session_factory() as session:
+            for run in runs:
+                stored = session.get(Run, run.id)
+                assert stored is not None and stored.status == "running"
+                assert stored.worker_run_id in remote_statuses
+                assert stored.lease_owner is None
+                assert stored.next_attempt_at is not None
+        assert [result.status for result in service.run_once()] == ["completed"] * 2
+        assert service.run_once() == []
+
+    assert len(remote_statuses) == 2
+    assert list(event_requests.values()) == [2, 2]
+    with session_factory() as session:
+        for run in runs:
+            stored = session.get(Run, run.id)
+            assert stored is not None and stored.lease_owner is None
+            assert stored.summary == "BATCH_OK"
+            events = list(session.scalars(select(RunEvent).where(RunEvent.run_id == run.id)))
+            ledger = list(session.scalars(select(UsageLedger).where(UsageLedger.run_id == run.id)))
+            assert len(events) == len(ledger) == 1
+            assert events[0].terminal
+            assert ledger[0].outcome == "completed"
 
 
 def test_lease_lost_fails_safe_before_persisting_remote_identity(session_factory) -> None:

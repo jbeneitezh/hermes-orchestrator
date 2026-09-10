@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from typing import Any, cast
 
 import httpx
@@ -174,8 +177,7 @@ class HermesRunsAdapter:
         error = payload.get("error", payload)
         code = error.get("code") if isinstance(error, dict) else None
         message = error.get("message") if isinstance(error, dict) else str(error)
-        retry_after_header = response.headers.get("Retry-After")
-        retry_after = float(retry_after_header) if retry_after_header else None
+        retry_after = self._parse_retry_after(response.headers.get("Retry-After"))
         normalized_code = str(code or "transient_provider_error")
         raise HermesAdapterError(
             normalized_code,
@@ -184,6 +186,24 @@ class HermesRunsAdapter:
             retry_after=retry_after,
             human_action_required=response.status_code in {401, 403},
         )
+
+    @staticmethod
+    def _parse_retry_after(value: str | None) -> float | None:
+        """Convierte segundos o fecha HTTP sin ocultar el error con una cabecera inválida."""
+
+        if not value:
+            return None
+        try:
+            seconds = float(value)
+        except ValueError:
+            try:
+                deadline = parsedate_to_datetime(value)
+                if deadline.tzinfo is None:
+                    deadline = deadline.replace(tzinfo=UTC)
+                return max(0.0, (deadline - datetime.now(UTC)).total_seconds())
+            except (ValueError, TypeError, OverflowError):
+                return None
+        return seconds if math.isfinite(seconds) and seconds >= 0 else None
 
     def discover(self) -> dict[str, Any]:
         try:
