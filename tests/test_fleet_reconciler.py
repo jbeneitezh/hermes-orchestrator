@@ -378,3 +378,30 @@ def test_http_runner_client_uses_only_fixed_internal_actions(monkeypatch) -> Non
     ]
     with pytest.raises(RuntimeError, match="token"):
         HttpFleetRunnerClient(Settings(fleet_runner_token="")).status()
+
+
+def test_http_runner_transport_failure_preserves_uncertainty(monkeypatch):
+    from hermes_orchestrator.fleet_runner import FleetOperationUncertain
+
+    class TimeoutClient:
+        def __init__(self, timeout):
+            assert timeout == 600
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return None
+
+        def request(self, *args, **kwargs):
+            raise httpx.ReadTimeout("lost response")
+
+    monkeypatch.setattr("hermes_orchestrator.fleet_runner.httpx.Client", TimeoutClient)
+    client = HttpFleetRunnerClient(
+        Settings(fleet_runner_token="test-only", fleet_runner_timeout_seconds=600)
+    )
+    for action in (client.apply, client.rollback):
+        with pytest.raises(FleetOperationUncertain):
+            action(["worker-operator"])
+    with pytest.raises(httpx.ReadTimeout):
+        client.status()
