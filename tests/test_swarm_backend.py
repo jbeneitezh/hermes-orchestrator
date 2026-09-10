@@ -106,7 +106,12 @@ def test_rollback_preserves_service_and_data():
     }
     instance.owned = lambda name: existing
     calls = []
-    instance.request = lambda *args, **kwargs: calls.append((args, kwargs))
+
+    def request(*args, **kwargs):
+        calls.append((args, kwargs))
+        return []
+
+    instance.request = request
     instance.rollback(["worker-developer"])
     assert calls[0][0] == ("POST", "/services/id/update")
     assert calls[0][1]["json"]["Mode"]["Replicated"]["Replicas"] == 0

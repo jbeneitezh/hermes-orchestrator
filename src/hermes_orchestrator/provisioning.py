@@ -15,6 +15,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from hermes_orchestrator.config import Settings
+from hermes_orchestrator.fleet_runner import FleetOperationUncertain
 
 AgentTemplateRole = Literal[
     "leader",
@@ -157,6 +158,7 @@ class HttpAgentProvisionerClient:
     def __init__(self, settings: Settings) -> None:
         self.base_url = settings.agent_provisioner_url.rstrip("/")
         self.token = settings.agent_provisioner_token
+        self.timeout = settings.agent_provisioner_timeout_seconds
 
     def _request(self, path: str, payload: ProvisioningPayload) -> ProvisionerResult:
         if not self.token:
@@ -164,7 +166,7 @@ class HttpAgentProvisionerClient:
                 "provisioner_token_missing", "Falta el token interno del provisioner", 503
             )
         try:
-            with httpx.Client(timeout=300) as client:
+            with httpx.Client(timeout=self.timeout) as client:
                 response = client.post(
                     f"{self.base_url}{path}",
                     headers={"X-Provisioner-Token": self.token},
@@ -673,6 +675,13 @@ class ManagedAgentRenderer:
         self.compose_path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
         try:
             runner_result = fleet.apply([service_name])
+        except FleetOperationUncertain as error:
+            # El reconciler puede seguir operando; no perder su definición deseada.
+            raise ProvisioningError(
+                "fleet_apply_uncertain",
+                "Resultado fleet desconocido; definición conservada para reconciliar",
+                503,
+            ) from error
         except Exception as error:
             self.compose_path.write_text(
                 json.dumps(json.loads(previous), indent=2) + "\n", encoding="utf-8"
@@ -710,7 +719,12 @@ class ManagedAgentRenderer:
                 config_digest=self._digest(document),
                 health="stopped",
             )
-        runner_result = fleet.rollback([service_name])
+        try:
+            runner_result = fleet.rollback([service_name])
+        except FleetOperationUncertain as error:
+            raise ProvisioningError(
+                "fleet_rollback_uncertain", "Parada fleet no confirmada; definición conservada", 503
+            ) from error
         del services[service_name]
         self.validate_document(document)
         self.compose_path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")

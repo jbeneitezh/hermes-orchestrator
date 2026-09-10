@@ -428,3 +428,17 @@ class SwarmBackend:
                     params={"version": existing["Version"]["Index"]},
                     json=spec,
                 )
+                for _ in range(90):
+                    tasks = self.request(
+                        "GET",
+                        "/tasks",
+                        params={"filters": json.dumps({"service": [existing["ID"]]})},
+                    )
+                    if not any(
+                        task["Status"]["State"] in {"running", "starting", "preparing"}
+                        for task in tasks
+                    ):
+                        break
+                    time.sleep(2)
+                else:
+                    raise ValueError("parada Swarm sin convergencia comprobada")

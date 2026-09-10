@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from hermes_orchestrator import provisioning as provisioning_module
 from hermes_orchestrator.config import Settings
+from hermes_orchestrator.fleet_runner import FleetOperationUncertain
 from hermes_orchestrator.main import create_app
 from hermes_orchestrator.models import (
     Agent,
@@ -1237,3 +1238,23 @@ def test_rollback_detiene_y_preserva_datos_logicos(api_context, renderer_context
             provisioning_payload(slug="data-steward-fleet-failure"), FailingFleet()
         )
     assert apply_failed.value.code == "fleet_apply_failed"
+
+
+def test_resultado_fleet_incierto_conserva_definicion(renderer_context, monkeypatch):
+    renderer, fleet, _, _ = renderer_context
+    payload = provisioning_payload()
+
+    def uncertain(*args):
+        raise FleetOperationUncertain("test transport timeout")
+
+    monkeypatch.setattr(fleet, "apply", uncertain)
+    with pytest.raises(ProvisioningError) as failed:
+        renderer.apply(payload, fleet)
+    assert failed.value.code == "fleet_apply_uncertain"
+    before = renderer.compose_path.read_text(encoding="utf-8")
+    assert "worker-" + payload.slug in json.loads(before)["services"]
+    monkeypatch.setattr(fleet, "rollback", uncertain)
+    with pytest.raises(ProvisioningError) as stopped:
+        renderer.rollback(payload, fleet)
+    assert stopped.value.code == "fleet_rollback_uncertain"
+    assert renderer.compose_path.read_text(encoding="utf-8") == before

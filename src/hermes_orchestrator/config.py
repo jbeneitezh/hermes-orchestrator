@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     internal_auth_revoked_token_hashes: set[str] = set()
     fleet_runner_url: str = "http://fleet-reconciler:8090"
     fleet_runner_token: str = ""
+    fleet_runner_timeout_seconds: float = 120
     fleet_project_name: str = "hermes-tradix-f11"
     fleet_compose_path: str = (
         "/host_mnt/d/Personal/hermes-tradix/hermes-agents-compose/compose.yaml"
@@ -43,6 +44,7 @@ class Settings(BaseSettings):
     ]
     agent_provisioner_url: str = "http://agent-provisioner:8091"
     agent_provisioner_token: str = ""
+    agent_provisioner_timeout_seconds: float = 300
     agent_policy_enabled: bool = False
     agent_policy_actor_id: str = "system:agent-policy"
     agent_policy_allowed_roles: list[str] = ["data_steward", "risk_manager", "trader"]

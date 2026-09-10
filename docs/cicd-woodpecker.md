@@ -11,3 +11,14 @@ El registry es `host.docker.internal:5443` para el agente y
 `192.168.1.197:5443` para LAN. Repositorios: `tradix/orchestrator-canary`
 y `tradix/fleet-canary`. Promoción por digest y revisión independiente.
 No se cambia ningún servicio científico existente desde este pipeline.
+
+Para el backend Swarm, el despliegue debe configurar en API y provisioner
+`HERMES_ORCHESTRATOR_FLEET_RUNNER_TIMEOUT_SECONDS=600` y, en API,
+`HERMES_ORCHESTRATOR_AGENT_PROVISIONER_TIMEOUT_SECONDS=660` para una operación
+de worker. Los lotes mayores requieren un presupuesto proporcional. Los valores
+predeterminados Compose siguen siendo 120/300 segundos.
+Una pérdida de transporte o fallo servidor sin convergencia se considera
+resultado incierto: el provisioner conserva la definición deseada y exige
+reconciliar estado; nunca elimina la definición suponiendo que el worker paró.
+El rollback explícito comprueba la terminación de las tareas antes de devolver
+`stopped`. Sólo el ejecutor fleet tiene socket Docker; los workers no lo reciben.

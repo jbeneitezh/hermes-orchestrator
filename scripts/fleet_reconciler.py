@@ -188,7 +188,8 @@ def reconcile(command: ReconcileCommand) -> dict[str, Any]:
                 else:
                     SWARM.apply(rendered, command.services)
         except ValueError as error:
-            raise HTTPException(status_code=422, detail=str(error)) from error
+            uncertain = "incompleta" in str(error) or "sin convergencia" in str(error)
+            raise HTTPException(status_code=503 if uncertain else 422, detail=str(error)) from error
         return snapshot(command.action, ["config", "swarm " + command.action + " <workers>"])
     if command.action == "rollback":
         run_command(["stop", *command.services], timeout=300)
