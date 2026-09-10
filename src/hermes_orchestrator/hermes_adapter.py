@@ -180,8 +180,12 @@ class HermesRunsAdapter:
         if response.is_success:
             return
         # Las respuestas de client.stream no cargan el cuerpo antes de acceder al JSON.
-        response.read()
-        payload = self._json(response)
+        try:
+            response.read()
+            payload = self._json(response)
+        except (httpx.TransportError, httpx.DecodingError):
+            # El status ya es conocido: no publicar el cuerpo parcial ni la excepción.
+            payload = {}
         error = payload.get("error", payload)
         code = error.get("code") if isinstance(error, dict) else None
         message = error.get("message") if isinstance(error, dict) else None
